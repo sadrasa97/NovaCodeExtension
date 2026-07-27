@@ -1,0 +1,274 @@
+{
+  "name": "novacode-chat",
+  "displayName": "NovaCode AI Chat",
+  "description": "VS Code AI coding assistant with local GGUF, OpenRouter, and NVIDIA backends. Includes file explorer, recent files, function list, code runner, chat history, and DeepSeek support.",
+  "version": "1.5.0",
+  "publisher": "novacode",
+  "icon": "media/icon.png",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "AI",
+    "Chat",
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "novacode-sidebar",
+          "title": "NovaCode AI",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "novacode-sidebar": [
+        {
+          "type": "webview",
+          "id": "novacode.chatView",
+          "name": "Chat"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "novacode.newChat",
+        "title": "NovaCode: New Chat",
+        "icon": "$(add)"
+      },
+      {
+        "command": "novacode.openSettings",
+        "title": "NovaCode: Model Settings",
+        "icon": "$(gear)"
+      },
+      {
+        "command": "novacode.setWorkspace",
+        "title": "NovaCode: Set Working Directory",
+        "icon": "$(folder-opened)"
+      },
+      {
+        "command": "novacode.setModelsDirectory",
+        "title": "NovaCode: Set Models Directory",
+        "icon": "$(folder-library)"
+      },
+      {
+        "command": "novacode.selectModel",
+        "title": "NovaCode: Select Model"
+      },
+      {
+        "command": "novacode.saveChatHistory",
+        "title": "NovaCode: Save Chat History",
+        "icon": "$(save)"
+      },
+      {
+        "command": "novacode.clearChatHistory",
+        "title": "NovaCode: Clear Chat History",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "novacode.runFile",
+        "title": "NovaCode: Run Active File",
+        "icon": "$(play)"
+      },
+      {
+        "command": "novacode.runSelection",
+        "title": "NovaCode: Run Selected Code",
+        "icon": "$(run-errors)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "novacode.newChat",
+          "when": "view == novacode.chatView",
+          "group": "navigation@1"
+        },
+        {
+          "command": "novacode.selectModel",
+          "when": "view == novacode.chatView",
+          "group": "navigation@2"
+        },
+        {
+          "command": "novacode.setWorkspace",
+          "when": "view == novacode.chatView",
+          "group": "navigation@3"
+        },
+        {
+          "command": "novacode.openSettings",
+          "when": "view == novacode.chatView",
+          "group": "navigation@4"
+        },
+        {
+          "command": "novacode.saveChatHistory",
+          "when": "view == novacode.chatView",
+          "group": "navigation@5"
+        },
+        {
+          "command": "novacode.clearChatHistory",
+          "when": "view == novacode.chatView",
+          "group": "navigation@6"
+        },
+        {
+          "command": "novacode.runFile",
+          "when": "view == novacode.chatView",
+          "group": "navigation@7"
+        },
+        {
+          "command": "novacode.runSelection",
+          "when": "view == novacode.chatView",
+          "group": "navigation@8"
+        }
+      ],
+      "commandPalette": []
+    },
+    "configuration": {
+      "title": "NovaCode AI",
+      "properties": {
+        "novacode.backend": {
+          "type": "string",
+          "default": "gguf",
+          "enum": [
+            "gguf",
+            "openrouter",
+            "nvidia"
+          ],
+          "description": "LLM backend"
+        },
+        "novacode.modelPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to GGUF model file"
+        },
+        "novacode.modelsDirectory": {
+          "type": "string",
+          "default": "",
+          "description": "Directory with GGUF models"
+        },
+        "novacode.defaultChatMode": {
+          "type": "string",
+          "default": "Chat",
+          "enum": [
+            "Chat",
+            "Agent",
+            "Explain",
+            "Fix",
+            "Tests",
+            "Search"
+          ],
+          "description": "Default chat mode"
+        },
+        "novacode.contextSize": {
+          "type": "number",
+          "default": 4096,
+          "description": "Context size"
+        },
+        "novacode.threads": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "default": null,
+          "description": "CPU threads. Leave null for llama.cpp default."
+        },
+        "novacode.gpuLayers": {
+          "type": "number",
+          "default": -1,
+          "description": "GPU layers (-1=all)"
+        },
+        "novacode.temperature": {
+          "type": "number",
+          "default": 0.7,
+          "description": "Temperature"
+        },
+        "novacode.maxTokens": {
+          "type": "number",
+          "default": 2048,
+          "description": "Max tokens"
+        },
+        "novacode.openrouterApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "OpenRouter API key"
+        },
+        "novacode.openrouterModel": {
+          "type": "string",
+          "default": "",
+          "description": "OpenRouter model"
+        },
+        "novacode.nvidiaApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "NVIDIA API key"
+        },
+        "novacode.nvidiaModel": {
+          "type": "string",
+          "default": "",
+          "description": "NVIDIA model"
+        },
+        "novacode.deepseekApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "DeepSeek API key (direct)"
+        },
+        "novacode.deepseekModel": {
+          "type": "string",
+          "default": "deepseek-chat",
+          "description": "DeepSeek model name"
+        },
+        "novacode.pythonPath": {
+          "type": "string",
+          "default": "",
+          "description": "Python path (auto if empty)"
+        },
+        "novacode.projectRoot": {
+          "type": "string",
+          "default": "",
+          "description": "NovaCode project root"
+        },
+        "novacode.rememberChatHistory": {
+          "type": "boolean",
+          "default": true,
+          "description": "Remember chat history across sessions"
+        },
+        "novacode.chatHistoryPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to chat history file"
+        },
+        "novacode.recentFilesMax": {
+          "type": "number",
+          "default": 25,
+          "description": "Max recent files to track"
+        },
+        "novacode.runPythonInTerminal": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run Python files in VS Code terminal"
+        },
+        "novacode.runNodeInTerminal": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run Node.js files in VS Code terminal"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "npx -y -p typescript@5.6.2 tsc -p ./",
+    "watch": "npx -y -p typescript@5.6.2 tsc -watch -p ./",
+    "package": "npx -y @vscode/vsce@3.2.0 package --allow-missing-repository --no-dependencies",
+    "install-ext": "code --install-extension novacode-chat-1.5.0.vsix"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "@types/vscode": "^1.85.0"
+  }
+}
