@@ -57,11 +57,54 @@ TOOL_CALL_RE = re.compile(
     re.DOTALL | re.IGNORECASE,
 )
 JSON_OBJECT_RE = re.compile(r"^\s*(?P<json>\{.*\})\s*$", re.DOTALL)
-# Last-resort fallback: grab the first {...} anywhere in the response that
-# actually looks like a tool call (has a "name" key), instead of requiring
-# the whole message body to be nothing but JSON.
+# Kept for callers that still want a plain (single-nesting-level) regex, but
+# _extract_json_object below no longer relies on this for the primary path --
+# see _iter_balanced_json_objects, which handles arbitrary nesting depth.
 ANY_JSON_OBJECT_RE = re.compile(r"\{(?:[^{}]|\{[^{}]*\})*\}", re.DOTALL)
 _LOOKS_LIKE_TOOL_CALL_RE = re.compile(r'"name"\s*:\s*"[a-zA-Z_]+"')
+
+
+def _iter_balanced_json_objects(text: str):
+    """Yield every top-level {...} span in text, honoring arbitrary nesting
+    depth and skipping braces that appear inside string literals. This is a
+    real scanner rather than a regex, so it doesn't break on JSON with more
+    than one level of nested objects/arrays-of-objects (the old
+    ANY_JSON_OBJECT_RE only tolerated one level of nesting)."""
+    n = len(text)
+    i = 0
+    while i < n:
+        if text[i] != "{":
+            i += 1
+            continue
+        start = i
+        depth = 0
+        in_string = False
+        escape = False
+        j = i
+        while j < n:
+            ch = text[j]
+            if in_string:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_string = False
+            else:
+                if ch == '"':
+                    in_string = True
+                elif ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        yield text[start:j + 1]
+                        break
+            j += 1
+        else:
+            # Unbalanced (truncated) object -- nothing more to find after this.
+            return
+        i = j + 1
 
 # Greetings / thanks / farewells and similarly short conversational messages
 # with no coding intent. Kept intentionally small and conservative: anything
@@ -94,16 +137,44 @@ def _is_small_talk(text: str) -> bool:
 
 def _extract_json_object(text: str) -> dict:
     """Best-effort extraction of a single JSON object from a model response,
-    tolerating markdown code fences or extra prose around the JSON."""
+    tolerating markdown code fences, stray prose, or nested objects/arrays of
+    arbitrary depth around the JSON.
+
+    Tries every top-level {...} span found (in order), not just the first one
+    a naive regex would grab -- a model sometimes emits an unrelated {...} in
+    prose before the real answer (e.g. "Here's what I understood: {...}")."""
     cleaned = text.strip()
     if cleaned.startswith("```"):
         cleaned = cleaned.strip("`").strip()
         if cleaned.lower().startswith("json"):
             cleaned = cleaned[4:].strip()
-    match = ANY_JSON_OBJECT_RE.search(cleaned)
-    if not match:
+
+    candidates = list(_iter_balanced_json_objects(cleaned))
+    if not candidates:
         raise ValueError("No JSON object found in response")
-    return json.loads(match.group(0))
+
+    last_err: Exception | None = None
+    parsed: list[dict] = []
+    for candidate in candidates:
+        try:
+            obj = json.loads(candidate)
+        except json.JSONDecodeError as exc:
+            last_err = exc
+            continue
+        if isinstance(obj, dict):
+            parsed.append(obj)
+
+    if not parsed:
+        raise ValueError(f"Found {len(candidates)} candidate object(s) but none parsed as JSON: {last_err}")
+
+    # If more than one candidate parsed, prefer one that actually has the
+    # expected "todo" key (the intent-analysis shape) instead of blindly
+    # taking the first -- stray prose before the real object can itself
+    # happen to be valid, unrelated JSON.
+    for obj in parsed:
+        if "todo" in obj:
+            return obj
+    return parsed[0]
 
 
 def _truncate(text: str, limit: int = MAX_TOOL_RESULT_CHARS) -> str:
@@ -180,7 +251,10 @@ class AgentSession:
                     {"role": "user", "content": user_request},
                 ],
                 workspace_context=None,
-                max_tokens=700,
+                # 700 tokens was too tight -- for anything but the shortest
+                # requests the model's JSON (especially the "todo" array) got
+                # cut off mid-object and silently failed to parse below.
+                max_tokens=1500,
             )
             data = _extract_json_object(raw)
             intent = str(data.get("intent") or "").strip()
@@ -189,7 +263,15 @@ class AgentSession:
             if not todo:
                 raise ValueError("Model returned no usable todo list")
             return intent, entities, todo
-        except Exception:
+        except Exception as exc:
+            # Previously this was a bare `except Exception: return ..., self._auto_plan(...)`
+            # with no trace at all, so every fallback to the generic 5-step plan was
+            # invisible -- there was no way to tell "intent analysis genuinely wasn't
+            # needed" from "intent analysis broke". Log it so this is debuggable.
+            import logging
+            logging.getLogger(__name__).warning(
+                "Intent analysis failed, falling back to generic plan: %s", exc
+            )
             return "", [], self._auto_plan(user_request)
 
     def _render_progress_marker(self) -> str:

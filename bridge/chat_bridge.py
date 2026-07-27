@@ -46,6 +46,58 @@ def _project_root() -> Path:
     )
 
 
+def _referenced_files_context(workspace: str | None, prompt: str) -> str:
+    """Lightweight retrieval step for Chat mode: if the user's message names a
+    file (e.g. "explain readme.md"), find it and pull in its actual content --
+    WITHOUT dumping the whole workspace index/tree into the model's context.
+    Search first, then hand the model only what it needs."""
+    import re as _re
+
+    if not workspace or not prompt:
+        return ""
+    root = Path(workspace).expanduser()
+    if not root.exists() or not root.is_dir():
+        return ""
+
+    # Grab plausible "name.ext" tokens from the user's message.
+    candidates = _re.findall(r"[A-Za-z0-9_\-./\\]+\.[A-Za-z0-9]{1,8}", prompt)
+    if not candidates:
+        return ""
+
+    try:
+        from tools.code_tools import agent_find_files, agent_read_file
+    except Exception:
+        return ""
+
+    seen: set[str] = set()
+    sections: list[str] = []
+    for token in candidates:
+        base = Path(token).name
+        if base in seen:
+            continue
+        seen.add(base)
+        try:
+            matches = agent_find_files(root, base, max_results=5)
+        except Exception:
+            continue
+        if not matches or matches.strip() == "(no matches)":
+            continue
+        first_match = matches.splitlines()[0].strip()
+        if not first_match or first_match.endswith("/"):
+            continue
+        try:
+            content = agent_read_file(root, first_match, max_chars=12000)
+        except Exception:
+            continue
+        sections.append(f"### {first_match}\n```\n{content}\n```")
+        if len(sections) >= 3:  # don't let one message pull in half the repo
+            break
+
+    if not sections:
+        return ""
+    return "Relevant file(s) referenced in the user's message:\n\n" + "\n\n".join(sections)
+
+
 def _workspace_context(workspace: str | None) -> str:
     if not workspace:
         return ""
@@ -400,12 +452,41 @@ def main() -> int:
                 text = "".join(chunks)
                 _stream_end(modified_files=list(dict.fromkeys(session.applied_files)))
             else:
-                # Chat mode - stream token by token
+                # Chat mode
                 from agent.providers import strip_think_tags
+                from agent.tools_agent import _is_small_talk, SMALL_TALK_SYSTEM_PROMPT
+
+                if _is_small_talk(prompt):
+                    # Skip workspace indexing entirely for greetings/thanks/etc:
+                    # this is what made a plain "hi" pay the cost of scanning
+                    # the whole project.
+                    reply = provider.complete(
+                        [
+                            {"role": "system", "content": SMALL_TALK_SYSTEM_PROMPT},
+                            {"role": "user", "content": prompt},
+                        ],
+                        workspace_context=None,
+                        max_tokens=200,
+                    )
+                    reply = reply.strip() or "Hi! What would you like help with?"
+                    for i in range(0, len(reply), 24):
+                        _stream_chunk(reply[i:i + 24])
+                    _stream_end()
+                    return 0
+
+                # Real question: search first, then feed the model only the
+                # files it actually needs (plus the lightweight tree/symbol
+                # index), instead of relying on tree/index alone.
+                ws_ctx_parts = [_workspace_context(settings.workspace)]
+                file_ctx = _referenced_files_context(settings.workspace, prompt)
+                if file_ctx:
+                    ws_ctx_parts.append(file_ctx)
+                ws_ctx = "\n\n".join(p for p in ws_ctx_parts if p)
+
                 raw_chunks: list[str] = []
                 for token in provider.stream(
                     history,
-                    workspace_context=_workspace_context(settings.workspace),
+                    workspace_context=ws_ctx,
                     max_tokens=settings.max_tokens,
                 ):
                     raw_chunks.append(token)
