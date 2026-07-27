@@ -36,15 +36,32 @@ from tools.code_tools import (
     agent_search,
     agent_tree,
     agent_write_file,
+    build_workspace_index,
     resolve_workspace_path_from_base,
 )
 from tools.web_search import duckduckgo_search
 
 MAX_ITERATIONS = 30
 MAX_TOOL_RESULT_CHARS = 12_000
-TOOL_CALL_RE = re.compile(r"```tool_call\s*\n(?P<json>.*?)```", re.DOTALL)
+# Maximum number of messages to keep in history to avoid context overflow.
+# We keep the system context + first user message + last N exchanges.
+MAX_HISTORY_MESSAGES = 20
+# NOTE: the original pattern required a literal newline right after
+# ```tool_call, so a model that emitted the whole block on one line (e.g.
+# "```tool_call {"name": ...} ```", which small/local models do fairly often)
+# was silently treated as if it hadn't called a tool at all. \s* now covers
+# both newlines and spaces, and we also accept a bare ```json fence and a
+# fence with no language tag at all as tool-call carriers.
+TOOL_CALL_RE = re.compile(
+    r"```(?:tool_call|tool[_ ]?use|json)?\s*(?P<json>\{.*?\})\s*```",
+    re.DOTALL | re.IGNORECASE,
+)
 JSON_OBJECT_RE = re.compile(r"^\s*(?P<json>\{.*\})\s*$", re.DOTALL)
-ANY_JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
+# Last-resort fallback: grab the first {...} anywhere in the response that
+# actually looks like a tool call (has a "name" key), instead of requiring
+# the whole message body to be nothing but JSON.
+ANY_JSON_OBJECT_RE = re.compile(r"\{(?:[^{}]|\{[^{}]*\})*\}", re.DOTALL)
+_LOOKS_LIKE_TOOL_CALL_RE = re.compile(r'"name"\s*:\s*"[a-zA-Z_]+"')
 
 # Greetings / thanks / farewells and similarly short conversational messages
 # with no coding intent. Kept intentionally small and conservative: anything
@@ -107,6 +124,7 @@ class AgentSession:
         self._plan: list[str] = []
         self._plan_status: list[str] = []
         self._context_loaded = False
+        self._workspace_index: str = ""
 
     def _to_workspace_relative(self, path: Path) -> str:
         return path.resolve().relative_to(self.workspace.resolve()).as_posix()
@@ -120,14 +138,24 @@ class AgentSession:
             raise ToolError(str(exc)) from exc
 
     def _load_project_context(self) -> str:
+        """Load project structure and code index. Returns empty string if
+        already loaded or if the workspace_context from the bridge already
+        contains the index."""
         if self._context_loaded:
             return ""
         self._context_loaded = True
+        parts: list[str] = []
         try:
             tree = agent_tree(self.workspace, ".", max_depth=3)
-            return f"Project structure:\n{tree}"
+            parts.append(f"Project structure:\n{tree}")
         except Exception:
-            return ""
+            pass
+        try:
+            self._workspace_index = build_workspace_index(self.workspace)
+            parts.append(f"Code index (file -> symbols):\n{self._workspace_index}")
+        except Exception:
+            pass
+        return "\n\n".join(parts)
 
     def _auto_plan(self, user_request: str) -> list[str]:
         return [
@@ -167,6 +195,44 @@ class AgentSession:
     def _render_progress_marker(self) -> str:
         steps = [{"title": title, "status": status} for title, status in zip(self._plan, self._plan_status)]
         return f"<!-- progress:{json.dumps(steps, ensure_ascii=False)} -->"
+
+    def _trim_history(self, history: list[dict]) -> list[dict]:
+        """Keep history within MAX_HISTORY_MESSAGES to prevent context overflow.
+
+        Strategy: always keep the first user message (the original request)
+        and the most recent exchanges. Old tool results in the middle are
+        summarized to save tokens.
+        """
+        if len(history) <= MAX_HISTORY_MESSAGES:
+            return history
+
+        # Always preserve: first message (user request) + last N messages
+        keep_tail = MAX_HISTORY_MESSAGES - 1
+        first_msg = history[0]
+        middle = history[1:-keep_tail]
+        tail = history[-keep_tail:]
+
+        # Summarize dropped middle section
+        tool_calls_done = []
+        for msg in middle:
+            content = msg.get("content", "")
+            if msg["role"] == "user" and content.startswith("Tool result for"):
+                # Extract just the tool name
+                tool_name = content.split("`")[1] if "`" in content else "unknown"
+                tool_calls_done.append(tool_name)
+
+        summary_parts = [first_msg]
+        if tool_calls_done:
+            summary_parts.append({
+                "role": "user",
+                "content": (
+                    f"[Context trimmed: {len(middle)} earlier messages removed. "
+                    f"Tools already called: {', '.join(tool_calls_done)}. "
+                    f"Continue from where you left off.]"
+                ),
+            })
+        summary_parts.extend(tail)
+        return summary_parts
 
     def _run_tool(self, name: str, args: dict) -> str:
         name = (name or "").strip().lower()
@@ -292,6 +358,34 @@ class AgentSession:
                     raise ToolError("write_file requires 'path'")
                 resolved = self._resolve_from_cwd(path)
                 rel = self._to_workspace_relative(resolved)
+                # Guard rail: the model sometimes "solves" a task by dumping a
+                # write_file call with placeholder/stub content (e.g. "# Empty
+                # file, will be replaced later") over a file it never actually
+                # read. That silently destroys real code. If the target
+                # already exists and has real content, refuse a write that
+                # looks like a stub and push the model toward read_file +
+                # edit_file instead.
+                if resolved.exists() and resolved.is_file():
+                    try:
+                        existing = resolved.read_text(encoding="utf-8", errors="replace")
+                    except Exception:
+                        existing = ""
+                    stub_markers = (
+                        "will be replaced", "to be implemented", "placeholder",
+                        "empty file content", "todo: implement",
+                    )
+                    looks_like_stub = (
+                        len(content.strip()) < 40
+                        or any(marker in content.lower() for marker in stub_markers)
+                    )
+                    if existing.strip() and looks_like_stub and not bool(args.get("force", False)):
+                        raise ToolError(
+                            f"Refusing to overwrite existing file '{rel}' ({len(existing)} chars) "
+                            "with placeholder/stub content. Use read_file to see the current "
+                            "content first, then use edit_file with the exact old_str/new_str to "
+                            "make a targeted change, or write_file with the FULL real file content "
+                            "and force=true if a full rewrite is truly intended."
+                        )
                 result = agent_write_file(self.workspace, rel, content, overwrite=bool(args.get("overwrite", True)))
                 self.applied_files.append(rel)
                 self._validation_needed = True
@@ -470,6 +564,10 @@ class AgentSession:
                 max_depth = int(args.get("max_depth", 3))
                 return agent_tree(self.workspace, target, max_depth=max_depth)
 
+            if name in {"index_workspace", "index"}:
+                self._workspace_index = build_workspace_index(self.workspace)
+                return self._workspace_index
+
             return f"[tool error] Unknown tool: {name}"
         except ToolError as exc:
             return f"[tool error] {exc}"
@@ -576,26 +674,46 @@ class AgentSession:
 
     @staticmethod
     def _extract_tool_call(response: str) -> Optional[tuple[str, dict]]:
-        match = TOOL_CALL_RE.search(response)
-        raw_json = match.group("json").strip() if match else ""
-        if not raw_json:
-            json_match = JSON_OBJECT_RE.match(response)
-            raw_json = json_match.group("json").strip() if json_match else ""
-        if not raw_json:
-            return None
-        try:
-            payload = json.loads(raw_json)
-        except json.JSONDecodeError:
-            return None
-        name = payload.get("name")
-        args = payload.get("args") or {}
-        if not isinstance(name, str) or not isinstance(args, dict):
-            return None
-        return name, args
+        candidates: list[str] = []
 
-    def run(self, history: list[dict], workspace_context: Optional[str], mode: str = "Agent") -> Iterator[str]:
-        """Execute the agent loop. Only the final model summary is yielded to the
-        user -- all internal tool calls, planning, and validation happen silently."""
+        # 1) Proper (or near-proper) fenced tool_call/json block, single- or
+        #    multi-line. re.finditer so if the model emits more than one
+        #    fenced block we try each until one parses.
+        candidates.extend(m.group("json").strip() for m in TOOL_CALL_RE.finditer(response))
+
+        # 2) Whole message is exactly one JSON object with no fences at all.
+        json_match = JSON_OBJECT_RE.match(response)
+        if json_match:
+            candidates.append(json_match.group("json").strip())
+
+        # 3) Last resort: the response has some prose/backticks around it but
+        #    still contains a single {...} blob that looks like {"name": ...}.
+        #    This is what rescues cases like
+        #    '```tool_call {"name": "write_file", "args": {...}}```' style
+        #    malformed fences that don't match pattern 1 exactly, or a stray
+        #    tool call the model printed without any fence at all.
+        for m in ANY_JSON_OBJECT_RE.finditer(response):
+            blob = m.group(0)
+            if _LOOKS_LIKE_TOOL_CALL_RE.search(blob):
+                candidates.append(blob)
+
+        for raw_json in candidates:
+            if not raw_json:
+                continue
+            try:
+                payload = json.loads(raw_json)
+            except json.JSONDecodeError:
+                continue
+            name = payload.get("name")
+            args = payload.get("args") or {}
+            if not isinstance(name, str) or not isinstance(args, dict):
+                continue
+            return name, args
+        return None
+
+    def run(self, history: list[dict], workspace_context: Optional[str], mode: str = "Agent") -> Iterator:
+        """Execute the agent loop. Yields plain text chunks for the final
+        response AND dict events for plan/step progress updates."""
         local_history = list(history)
         user_request = local_history[-1]["content"] if local_history else ""
 
@@ -613,24 +731,56 @@ class AgentSession:
                 yield chunk
             return
 
-        # --- Prepare context (no extra LLM call for intent analysis) ---
+        # --- Build the plan and emit it to the UI ---
+        self._plan = self._auto_plan(user_request)
+        self._plan_status = ["pending"] * len(self._plan)
+
+        # Emit initial plan
+        yield {"type": "plan", "steps": [{"title": t, "status": s} for t, s in zip(self._plan, self._plan_status)]}
+
+        # Step 0: Analyze request
+        self._plan_status[0] = "in-progress"
+        yield {"type": "plan", "steps": [{"title": t, "status": s} for t, s in zip(self._plan, self._plan_status)]}
         self.on_status("Working...")
-        context_parts = [workspace_context or "", self._load_project_context()]
+
+        # If workspace_context from bridge already has the code index, don't
+        # duplicate it via _load_project_context.
+        ws_ctx = workspace_context or ""
+        if "Code index" not in ws_ctx:
+            extra = self._load_project_context()
+            context_parts = [ws_ctx, extra]
+        else:
+            self._context_loaded = True
+            context_parts = [ws_ctx]
         context = "\n\n".join(p for p in context_parts if p)
+
+        self._plan_status[0] = "completed"
+        # Step 1: Explore
+        self._plan_status[1] = "in-progress"
+        yield {"type": "plan", "steps": [{"title": t, "status": s} for t, s in zip(self._plan, self._plan_status)]}
 
         no_action_nudges = 0
         MAX_NO_ACTION_NUDGES = 2
+        exploration_done = False
+        implementation_started = False
 
         for _ in range(MAX_ITERATIONS):
+            local_history = self._trim_history(local_history)
             response = self.provider.complete(local_history, workspace_context=context, mode="agent")
             call = self._extract_tool_call(response)
 
             if call is None:
                 # Auto-validate if we changed files
                 if self._validation_needed:
+                    # Step 4: Validate
+                    self._plan_status[4] = "in-progress"
+                    yield {"type": "plan", "steps": [{"title": t, "status": s} for t, s in zip(self._plan, self._plan_status)]}
                     self.on_status("Validating...")
                     ok, validation_report = self._auto_validate_changes()
                     self._validation_needed = False if ok else True
+                    if ok:
+                        self._plan_status[4] = "completed"
+                    yield {"type": "plan", "steps": [{"title": t, "status": s} for t, s in zip(self._plan, self._plan_status)]}
                     local_history.append({"role": "assistant", "content": response})
                     local_history.append(
                         {
@@ -656,22 +806,56 @@ class AgentSession:
                         {
                             "role": "user",
                             "content": (
-                                "You have not made any actual changes yet and did not emit a "
-                                "tool_call. Stop describing what you plan to do -- emit exactly "
-                                "one ```tool_call``` block right now that performs the next "
-                                "concrete step (e.g. write_file)."
+                                "You have not made any actual changes yet and I could not parse a "
+                                "valid tool call from your last message. Stop describing what you "
+                                "plan to do. Emit ONLY a single fenced block in exactly this format, "
+                                "with a real newline after the opening fence and nothing else in "
+                                "the message:\n"
+                                "```tool_call\n"
+                                '{"name": "read_file", "args": {"path": "relative/path.py"}}\n'
+                                "```\n"
+                                "Start by reading or searching the relevant file(s) -- do not "
+                                "write_file with placeholder content."
                             ),
                         }
                     )
                     continue
+
+                # Mark remaining steps complete
+                for i in range(len(self._plan_status)):
+                    if self._plan_status[i] != "completed":
+                        self._plan_status[i] = "completed"
+                yield {"type": "plan", "steps": [{"title": t, "status": s} for t, s in zip(self._plan, self._plan_status)]}
 
                 # Done -- yield only the final summary to the user
                 for chunk in _chunk_text(response):
                     yield chunk
                 return
 
-            # Execute tool silently
+            # Execute tool
             name, args = call
+
+            # Track which plan phase we're in based on tool type
+            read_tools = {"read_file", "read_many_files", "search_code", "grep", "list_files",
+                          "ls", "dir", "list_dir", "find_files", "file_search", "file_info",
+                          "list_functions", "symbols", "glob", "tree", "pwd", "cd", "web_search"}
+            write_tools = {"write_file", "edit_file", "batch_edit", "create_directory", "mkdir",
+                           "delete_file", "move_file", "copy_file", "rename_symbol", "replace_regex",
+                           "insert_at_line", "prepend_file", "append_file", "format_code"}
+
+            if name in write_tools and not implementation_started:
+                # Move from explore to identify/implement
+                if not exploration_done:
+                    self._plan_status[1] = "completed"
+                    exploration_done = True
+                self._plan_status[2] = "completed"
+                self._plan_status[3] = "in-progress"
+                implementation_started = True
+                yield {"type": "plan", "steps": [{"title": t, "status": s} for t, s in zip(self._plan, self._plan_status)]}
+
+            # Emit tool call event for the UI
+            yield {"type": "tool", "name": name, "args": _format_args(args)}
+
             self.on_status(f"{name}({_format_args(args)})")
             result = self._run_tool(name, args)
             local_history.append({"role": "assistant", "content": response})

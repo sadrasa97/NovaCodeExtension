@@ -420,8 +420,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const resp = await this._callBridge(prompt, mode);
       this._messages.push({ role: "assistant", content: resp });
       this._persistHistoryIfEnabled();
-      this.postMessage({ type: "response", text: resp });
-      this.postMessage({ type: "historyUpdated", messages: this._messages });
+      // streamEnd already signalled to the webview; just finalize with full text for history
+      this.postMessage({ type: "streamFinalize", text: resp });
     } catch (err: any) {
       const msg = err?.message || String(err);
       this._messages.push({ role: "error", content: msg });
@@ -440,8 +440,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           const resp = await this._callBridge(m.content, m.mode || "Chat");
           this._messages.push({ role: "assistant", content: resp });
           this._persistHistoryIfEnabled();
-          this.postMessage({ type: "response", text: resp });
-          this.postMessage({ type: "historyUpdated", messages: this._messages });
+          this.postMessage({ type: "streamFinalize", text: resp });
         } catch (err: any) {
           const msg = err?.message || String(err);
           this._messages.push({ role: "error", content: msg });
@@ -563,35 +562,90 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       });
 
       const python = this._settings.pythonPath || (process.platform === "win32" ? "python" : "python3");
-      const childProcess = child.execFile(python, [actualBridge, payload], {
+      const isAgentMode = ["Agent", "Plan", "WebSearch"].includes(mode);
+      const bridgeTimeout = isAgentMode ? 900000 : 300000;
+
+      // Use spawn for streaming output token-by-token
+      const childProcess = child.spawn(python, [actualBridge, payload], {
         cwd: projectRoot,
         windowsHide: true,
-        timeout: 300000,
-        maxBuffer: 20 * 1024 * 1024,
-      }, (error, stdout, stderr) => {
-        this._activeBridge = null;
-        if (stdout && stdout.trim()) {
-          try {
-            const r = JSON.parse(stdout.trim());
-            if (r.ok) {
-              if (r.runner_output) {
-                this._runnerOutput = r.runner_output;
-                this.postMessage({ type: "runnerOutput", text: r.runner_output });
-              }
-              resolve(r.text || "(empty)");
-              return;
-            }
-            reject(new Error(r.error || "Bridge error"));
-            return;
-          } catch (_err) { /* stdout wasn't valid JSON, fall through */ }
-        }
-        if (error) {
-          reject(new Error(error.message));
-          return;
-        }
-        reject(new Error("Invalid bridge output: " + (stdout || "").slice(0, 200)));
+        stdio: ["ignore", "pipe", "pipe"],
       });
       this._activeBridge = childProcess;
+
+      // Signal the webview to prepare for streaming
+      this.postMessage({ type: "streamStart" });
+
+      let lineBuffer = "";
+      const allChunks: string[] = [];
+      let modifiedFiles: string[] = [];
+      let gotError = false;
+
+      childProcess.stdout!.on("data", (data: Buffer) => {
+        lineBuffer += data.toString("utf-8");
+        const lines = lineBuffer.split("\n");
+        lineBuffer = lines.pop() || "";
+        for (const line of lines) {
+          if (!line.trim()) { continue; }
+          try {
+            const msg = JSON.parse(line);
+            if (msg.stream && msg.chunk) {
+              allChunks.push(msg.chunk);
+              this.postMessage({ type: "streamChunk", chunk: msg.chunk });
+            } else if (msg.stream && msg.event) {
+              // Forward agent events (plan updates, tool calls, status) to webview
+              this.postMessage({ type: "agentEvent", event: msg.event, ...msg });
+            } else if (msg.stream && msg.done) {
+              if (msg.modified_files) { modifiedFiles = msg.modified_files; }
+            } else if (msg.ok === false) {
+              gotError = true;
+              reject(new Error(msg.error || "Bridge error"));
+            }
+          } catch (_e) { /* ignore non-JSON lines */ }
+        }
+      });
+
+      // Timeout watchdog
+      const timer = setTimeout(() => {
+        try { childProcess.kill(); } catch (_e) {}
+        reject(new Error(
+          `The ${mode} request timed out after ${Math.round(bridgeTimeout / 60000)} minutes. ` +
+          "This can happen with small local models in Agent mode. " +
+          "Try a shorter prompt, use Chat mode, or switch to a faster backend."
+        ));
+      }, bridgeTimeout);
+
+      childProcess.on("close", (_code) => {
+        clearTimeout(timer);
+        this._activeBridge = null;
+        // Process any remaining data in the buffer
+        if (lineBuffer.trim()) {
+          try {
+            const msg = JSON.parse(lineBuffer);
+            if (msg.stream && msg.chunk) {
+              allChunks.push(msg.chunk);
+              this.postMessage({ type: "streamChunk", chunk: msg.chunk });
+            } else if (msg.ok === false && !gotError) {
+              gotError = true;
+              this.postMessage({ type: "streamEnd" });
+              reject(new Error(msg.error || "Bridge error"));
+              return;
+            }
+          } catch (_e) {}
+        }
+        this.postMessage({ type: "streamEnd" });
+        if (!gotError) {
+          const fullText = allChunks.join("");
+          resolve(fullText.trim() || "(empty)");
+        }
+      });
+
+      childProcess.on("error", (err) => {
+        clearTimeout(timer);
+        this._activeBridge = null;
+        this.postMessage({ type: "streamEnd" });
+        if (!gotError) { reject(new Error(err.message)); }
+      });
     });
   }
 

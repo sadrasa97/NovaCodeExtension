@@ -89,6 +89,25 @@ export function getWebviewHtml(webview: vscode.Webview, _extensionUri: vscode.Ur
     .file-change .path { font-family: var(--vscode-editor-font-family); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .file-change .meta { color: var(--muted); font-size: 10px; }
 
+    /* === Agent Todo List (Copilot-style) === */
+    .agent-todo { margin: 8px 0; border-radius: 10px; border: 1px solid var(--border); background: var(--panel); overflow: hidden; }
+    .agent-todo-header { display: flex; align-items: center; gap: 8px; padding: 10px 12px; font-size: 12px; font-weight: 600; color: var(--fg); border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--accent) 6%, var(--panel)); }
+    .agent-todo-header .spinner { width: 14px; height: 14px; border: 2px solid var(--muted); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; flex-shrink: 0; }
+    .agent-todo-header .check-all { color: #22c55e; font-size: 16px; flex-shrink: 0; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .agent-todo-list { list-style: none; padding: 0; margin: 0; }
+    .agent-todo-item { display: flex; align-items: flex-start; gap: 10px; padding: 8px 12px; border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent); font-size: 12px; line-height: 1.5; transition: background .15s; }
+    .agent-todo-item:last-child { border-bottom: none; }
+    .agent-todo-item .todo-icon { width: 18px; height: 18px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; margin-top: 1px; }
+    .agent-todo-item .todo-icon .circle { width: 16px; height: 16px; border-radius: 50%; border: 2px solid var(--muted); }
+    .agent-todo-item.in-progress .todo-icon .circle { border-color: var(--accent); border-top-color: transparent; animation: spin 0.8s linear infinite; }
+    .agent-todo-item.completed .todo-icon svg { color: #22c55e; }
+    .agent-todo-item .todo-text { flex: 1; color: var(--fg); }
+    .agent-todo-item.pending .todo-text { color: var(--muted); }
+    .agent-todo-item.completed .todo-text { color: var(--muted); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--muted) 50%, transparent); }
+    .agent-todo-item .todo-detail { font-size: 11px; color: var(--muted); margin-top: 2px; font-family: var(--vscode-editor-font-family); }
+    .agent-tool-log { margin: 0 0 4px; padding: 4px 12px 4px 40px; font-size: 11px; color: var(--muted); font-family: var(--vscode-editor-font-family); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
     /* === Composer === */
     .composer { padding: 8px 12px; border-top: 1px solid var(--border); background: var(--panel); flex-shrink: 0; }
     .composer-box { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--input); transition: border-color .15s; }
@@ -363,6 +382,71 @@ export function getWebviewHtml(webview: vscode.Webview, _extensionUri: vscode.Ur
       return item;
     }
 
+    // --- Agent Todo List (Copilot-style) ---
+    let agentTodoContainer = null;
+    let agentTodoListEl = null;
+    let agentTodoHeaderEl = null;
+
+    function renderAgentTodo(steps) {
+      els.empty.style.display = "none";
+      if (!agentTodoContainer) {
+        agentTodoContainer = document.createElement("div");
+        agentTodoContainer.className = "agent-todo";
+        agentTodoHeaderEl = document.createElement("div");
+        agentTodoHeaderEl.className = "agent-todo-header";
+        agentTodoContainer.appendChild(agentTodoHeaderEl);
+        agentTodoListEl = document.createElement("ul");
+        agentTodoListEl.className = "agent-todo-list";
+        agentTodoContainer.appendChild(agentTodoListEl);
+        els.messages.appendChild(agentTodoContainer);
+      }
+
+      // Update header
+      const allDone = steps.every(function(s) { return s.status === "completed"; });
+      const inProgress = steps.find(function(s) { return s.status === "in-progress"; });
+      agentTodoHeaderEl.innerHTML = allDone
+        ? '<span class="check-all">✓</span> All steps completed'
+        : '<div class="spinner"></div> ' + (inProgress ? escapeHtml(inProgress.title) : 'Working...');
+
+      // Update items
+      agentTodoListEl.innerHTML = "";
+      steps.forEach(function(step) {
+        const li = document.createElement("li");
+        li.className = "agent-todo-item " + step.status;
+        const iconDiv = document.createElement("div");
+        iconDiv.className = "todo-icon";
+        if (step.status === "completed") {
+          iconDiv.innerHTML = '<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M6.27 10.87L3.13 7.73a.5.5 0 0 0-.7.7l3.5 3.5a.5.5 0 0 0 .7 0l7-7a.5.5 0 0 0-.7-.7L6.27 10.87z"/></svg>';
+        } else {
+          iconDiv.innerHTML = '<div class="circle"></div>';
+        }
+        const textDiv = document.createElement("div");
+        textDiv.className = "todo-text";
+        textDiv.textContent = step.title;
+        li.append(iconDiv, textDiv);
+        agentTodoListEl.appendChild(li);
+      });
+      scrollToBottom();
+    }
+
+    function appendToolLog(name, args) {
+      if (!agentTodoContainer) { return; }
+      // Remove previous tool log to keep it clean
+      const prev = agentTodoContainer.parentElement.querySelector(".agent-tool-log");
+      if (prev) { prev.remove(); }
+      const log = document.createElement("div");
+      log.className = "agent-tool-log";
+      log.textContent = "⚡ " + name + "(" + (args || "") + ")";
+      agentTodoContainer.after(log);
+      scrollToBottom();
+    }
+
+    function clearAgentTodo() {
+      agentTodoContainer = null;
+      agentTodoListEl = null;
+      agentTodoHeaderEl = null;
+    }
+
     function appendFileChange(path, action) {
       const item = document.createElement("div");
       item.className = "file-change";
@@ -419,6 +503,11 @@ export function getWebviewHtml(webview: vscode.Webview, _extensionUri: vscode.Ur
       return String(value || "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]);
     }
 
+    // --- Streaming state ---
+    let streamingItem = null;
+    let streamingBubble = null;
+    let streamingRaw = "";
+
     window.addEventListener("message", (event) => {
       const msg = event.data;
       if (msg.type === "settings") {
@@ -427,9 +516,67 @@ export function getWebviewHtml(webview: vscode.Webview, _extensionUri: vscode.Ur
       }
       if (msg.type === "historyUpdated") renderHistory(msg.messages || []);
       if (msg.type === "response") { setBusy(false); append("assistant", msg.text, "NovaCode"); }
-      if (msg.type === "error") { setBusy(false); append("error", msg.text, "Error"); }
-      if (msg.type === "clear") renderHistory([]);
-      if (msg.type === "retryStart") setBusy(true);
+      if (msg.type === "streamStart") {
+        // Reset streaming state; the bubble is created lazily on first text chunk
+        streamingRaw = "";
+        streamingItem = null;
+        streamingBubble = null;
+      }
+      if (msg.type === "streamChunk") {
+        // Lazily create the assistant bubble on first text chunk
+        if (!streamingBubble) {
+          els.empty.style.display = "none";
+          streamingItem = document.createElement("section");
+          streamingItem.className = "message assistant typing";
+          const meta = document.createElement("div");
+          meta.className = "meta";
+          meta.textContent = "NovaCode";
+          streamingBubble = document.createElement("div");
+          streamingBubble.className = "bubble";
+          streamingItem.append(meta, streamingBubble);
+          els.messages.appendChild(streamingItem);
+        }
+        streamingRaw += msg.chunk;
+        streamingBubble.innerHTML = renderMarkdown(streamingRaw);
+        scrollToBottom();
+      }
+      if (msg.type === "agentEvent") {
+        if (msg.event === "plan" && msg.steps) {
+          renderAgentTodo(msg.steps);
+        } else if (msg.event === "tool") {
+          appendToolLog(msg.name, msg.args);
+        }
+      }
+      if (msg.type === "streamEnd") {
+        if (streamingItem) { streamingItem.classList.remove("typing"); }
+      }
+      if (msg.type === "streamFinalize") {
+        setBusy(false);
+        // Remove the tool log if present
+        const toolLog = document.querySelector(".agent-tool-log");
+        if (toolLog) { toolLog.remove(); }
+        // Re-render the final text with proper markdown and bind code actions
+        if (streamingBubble && streamingItem) {
+          streamingBubble.innerHTML = renderMarkdown(msg.text);
+          streamingItem.classList.remove("typing");
+          bindCodeActions(streamingItem);
+        }
+        streamingItem = null;
+        streamingBubble = null;
+        streamingRaw = "";
+      }
+      if (msg.type === "error") {
+        setBusy(false);
+        if (streamingItem) {
+          streamingItem.remove();
+          streamingItem = null;
+          streamingBubble = null;
+          streamingRaw = "";
+        }
+        append("error", msg.text, "Error");
+      }
+      if (msg.type === "clear") { clearAgentTodo(); renderHistory([]); }
+      if (msg.type === "retryStart") { clearAgentTodo(); setBusy(true); }
       if (msg.type === "explorerData") renderExplorer(msg.entries || []);
       if (msg.type === "refreshExplorer") requestExplorer();
     });

@@ -12,13 +12,13 @@ class Settings:
     def __init__(self) -> None:
         self.backend = "gguf"
         self.model_path = ""
-        self.context_size = 4096
+        self.context_size = 16384
         self.threads = None
         self.gpu_layers = -1
         self.temperature = 0.7
         self.top_p = 0.9
         self.repeat_penalty = 1.1
-        self.max_tokens = 2048
+        self.max_tokens = 4096
         self.verbose = False
 
         self.openrouter_api_key = ""

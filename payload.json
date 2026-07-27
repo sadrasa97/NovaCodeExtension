@@ -1,0 +1,1 @@
+﻿{"prompt":"test","mode":"Chat","backend":"gguf","model_path":"d:\\models\\Qwen3.5-0.8B-Q4_0.gguf","context_size":4098,"gpu_layers":-1,"threads":null,"temperature":0.7,"max_tokens":2048,"workspace":"d:\\NOvaCode\\NovaCodeExtension"}

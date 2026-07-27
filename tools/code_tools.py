@@ -597,6 +597,60 @@ def agent_rename_symbol(workspace: Path, old_name: str, new_name: str, file_path
     return f"Renamed {len(matches)} occurrence(s) of '{old_name}' -> '{new_name}' in {rel}"
 
 
+def build_workspace_index(workspace: Path, max_files: int = 500) -> str:
+    """Build a compact symbol index of the entire workspace.
+
+    Returns a concise map of every file with its classes, functions, and key
+    symbols so the agent can locate code without reading every file.
+    """
+    workspace = workspace.resolve()
+    index_parts: list[str] = []
+
+    for root, dirs, files in os.walk(workspace, topdown=True):
+        dirs[:] = sorted(d for d in dirs if d not in IGNORED_DIRS and not d.startswith("."))
+        root_path = Path(root)
+
+        for name in sorted(files):
+            if len(index_parts) >= max_files:
+                break
+            if name.startswith("."):
+                continue
+            file_path = root_path / name
+            rel = file_path.relative_to(workspace)
+            if _is_ignored(rel):
+                continue
+            if not _is_probably_text(file_path):
+                continue
+
+            try:
+                content = file_path.read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                continue
+
+            lines = content.splitlines()
+            line_count = len(lines)
+            symbols: list[str] = []
+            for i, line in enumerate(lines, start=1):
+                for pattern, kind in SYMBOL_PATTERNS:
+                    m = pattern.search(line)
+                    if m:
+                        symbols.append(f"  L{i}: {kind} {m.group(1)}")
+                        break
+
+            rel_str = rel.as_posix()
+            if symbols:
+                index_parts.append(f"{rel_str} ({line_count} lines)\n" + "\n".join(symbols))
+            else:
+                index_parts.append(f"{rel_str} ({line_count} lines)")
+
+        if len(index_parts) >= max_files:
+            break
+
+    if not index_parts:
+        return "(empty workspace)"
+    return "\n".join(index_parts)
+
+
 def agent_tree(workspace: Path, path: str = ".", max_depth: int = 3) -> str:
     workspace = workspace.resolve()
     base = resolve_workspace_path_from_base(workspace, workspace, path)

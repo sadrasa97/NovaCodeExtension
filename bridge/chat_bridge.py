@@ -12,6 +12,21 @@ def _respond(ok: bool, **payload) -> None:
     print(json.dumps({"ok": ok, **payload}, ensure_ascii=False))
 
 
+def _stream_chunk(text: str) -> None:
+    """Write a single streaming token/chunk as a JSON line to stdout."""
+    print(json.dumps({"stream": True, "chunk": text}, ensure_ascii=False), flush=True)
+
+
+def _stream_end(**payload) -> None:
+    """Signal the end of streaming output."""
+    print(json.dumps({"stream": True, "done": True, **payload}, ensure_ascii=False), flush=True)
+
+
+def _stream_event(event_type: str, **payload) -> None:
+    """Emit a structured agent event (plan, step status, tool call, etc.)."""
+    print(json.dumps({"stream": True, "event": event_type, **payload}, ensure_ascii=False), flush=True)
+
+
 if sys.platform == "win32":
     try:
         sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
@@ -39,25 +54,21 @@ def _workspace_context(workspace: str | None) -> str:
         return ""
 
     tree_output = _workspace_tree(workspace)
-    interesting: list[str] = []
-    ignored = {".git", ".venv", "node_modules", "__pycache__", "dist", "out", "build", ".mypy_cache", ".pytest_cache", "node_modules_old"}
-    for path in root.rglob("*"):
-        if any(part in ignored for part in path.parts):
-            continue
-        if path.is_file():
-            try:
-                rel = path.relative_to(root)
-            except ValueError:
-                rel = path
-            interesting.append(str(rel))
-        if len(interesting) >= 200:
-            break
+
+    # Build a compact symbol index so the agent knows where every function,
+    # class, and method lives without reading every file.
+    index_output = ""
+    try:
+        from tools.code_tools import build_workspace_index
+        index_output = build_workspace_index(root)
+    except Exception:
+        pass
 
     parts = []
     if tree_output:
         parts.append(f"Project structure:\n{tree_output}")
-    if interesting:
-        parts.append("Project files:\n{}".format("\n".join(f"- {item}" for item in interesting[:100])))
+    if index_output:
+        parts.append(f"Code index (file -> symbols):\n{index_output}")
     return "\n\n".join(parts) if parts else f"Workspace directory: {root}"
 
 
@@ -365,27 +376,42 @@ def main() -> int:
         try:
             if mode in ("Agent", "Plan", "WebSearch"):
                 from agent.tools_agent import AgentSession
-                session = AgentSession(provider, settings)
+
+                def _on_status(msg: str) -> None:
+                    _stream_event("status", message=msg)
+
+                session = AgentSession(provider, settings, on_status=_on_status)
                 chunks: list[str] = []
-                for chunk in session.run(history, workspace_context=_workspace_context(settings.workspace)):
-                    chunks.append(chunk)
-                text = "".join(chunks)
+                for item in session.run(history, workspace_context=_workspace_context(settings.workspace)):
+                    # The agent yields either plain text chunks or dict events
+                    if isinstance(item, dict):
+                        _stream_event(item.get("type", "status"), **{k: v for k, v in item.items() if k != "type"})
+                    else:
+                        _stream_chunk(item)
+                        chunks.append(item)
                 # Append modified files summary
                 if session.applied_files:
                     unique_files = list(dict.fromkeys(session.applied_files))
                     files_section = "\n\n---\n\n**📁 Modified Files:**\n"
                     for f in unique_files:
                         files_section += f"- `{f}`\n"
-                    text += files_section
-                _respond(True, text=text.strip(), modified_files=list(dict.fromkeys(session.applied_files)))
+                    _stream_chunk(files_section)
+                    chunks.append(files_section)
+                text = "".join(chunks)
+                _stream_end(modified_files=list(dict.fromkeys(session.applied_files)))
             else:
-                # Chat mode - simple completion
-                text = provider.complete(
+                # Chat mode - stream token by token
+                from agent.providers import strip_think_tags
+                raw_chunks: list[str] = []
+                for token in provider.stream(
                     history,
                     workspace_context=_workspace_context(settings.workspace),
                     max_tokens=settings.max_tokens,
-                )
-                _respond(True, text=text.strip())
+                ):
+                    raw_chunks.append(token)
+                    _stream_chunk(token)
+                # Send done signal (strip_think_tags applied on final text for history)
+                _stream_end()
         finally:
             provider.close()
 
