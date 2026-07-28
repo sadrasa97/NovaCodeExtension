@@ -87,6 +87,10 @@ user when the task is complete, blocked, or requires a decision only they can ma
 - copy_file(source: str, destination: str)
 - delete_file(path: str)
 - run_command(command: str, timeout_seconds: int=300)
+- shell(command: str, shell_type: str="auto", timeout_seconds: int=30)
+- cmd(command: str, timeout_seconds: int=30)
+- powershell(command: str, timeout_seconds: int=30)
+- env_context()
 
 # IMPORTANT: Using the code index
 You are provided with a "Code index" in your context that maps every file to its

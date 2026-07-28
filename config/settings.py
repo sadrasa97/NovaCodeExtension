@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-VALID_BACKENDS = ["gguf", "openrouter", "nvidia"]
+VALID_BACKENDS = ["gguf", "openrouter", "nvidia", "openai"]
 CONFIG_DIR = Path.home() / ".gguf_code_agent"
 
 
@@ -28,6 +28,10 @@ class Settings:
         self.nvidia_api_key = ""
         self.nvidia_model = ""
         self.nvidia_base_url = "https://integrate.api.nvidia.com/v1"
+
+        self.openai_api_key = ""
+        self.openai_base_url = ""
+        self.openai_model = ""
 
         self.deepseek_api_key = ""
         self.deepseek_model = "deepseek-chat"
@@ -59,6 +63,14 @@ class Settings:
                 return "NVIDIA NIM API key is not set."
             if not self.nvidia_model:
                 return "NVIDIA NIM model is not set."
+
+        elif self.backend == "openai":
+            if not self.openai_api_key:
+                return "OpenAI API key is not set."
+            if not self.openai_model:
+                return "OpenAI model is not set."
+            if not self.openai_base_url:
+                return "OpenAI base URL is not set."
 
         return None
 

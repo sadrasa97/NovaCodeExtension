@@ -10,7 +10,7 @@
 
 ## ✨ Features
 
-### 🤖 Agent Mode (Like GitHub Copilot Agent)
+### 🤖 Agent Mode 
 - **Autonomous code editing** — the agent searches your workspace, reads files, makes precise edits, and validates changes automatically
 - **Multi-step reasoning** — uses a ReAct-style tool loop to understand context before making changes
 - **Auto-validation** — runs `py_compile` and `pytest` after edits to catch errors before presenting results
@@ -62,6 +62,7 @@ When in Agent or Search mode, the AI has access to:
 ### ☁️ Cloud Options
 - **OpenRouter** — access hundreds of models (Llama, Mistral, Claude, GPT, etc.)
 - **NVIDIA** — use NVIDIA's hosted inference endpoints
+- **OpenAI** — direct access to OpenAI's powerful models (GPT-4o, etc.)
 
 ## 📸 How It Works
 

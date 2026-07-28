@@ -137,7 +137,8 @@
           "enum": [
             "gguf",
             "openrouter",
-            "nvidia"
+            "nvidia",
+            "openai"
           ],
           "description": "LLM backend"
         },
@@ -256,6 +257,21 @@
           "type": "boolean",
           "default": true,
           "description": "Run Node.js files in VS Code terminal"
+        },
+        "novacode.openaiApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "OpenAI API key"
+        },
+        "novacode.openaiBaseUrl": {
+          "type": "string",
+          "default": "",
+          "description": "OpenAI-compatible base URL (e.g. https://api.openai.com/v1)"
+        },
+        "novacode.openaiModel": {
+          "type": "string",
+          "default": "",
+          "description": "OpenAI model name (e.g. gpt-4o, gpt-4o-mini)"
         }
       }
     }

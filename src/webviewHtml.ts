@@ -113,12 +113,25 @@ export function getWebviewHtml(webview: vscode.Webview, _extensionUri: vscode.Ur
     .composer-box { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--input); transition: border-color .15s; }
     .composer-box:focus-within { border-color: var(--accent); }
     textarea { width: 100%; min-height: 60px; max-height: 150px; resize: none; border: 0; outline: 0; color: var(--input-fg); background: transparent; line-height: 1.5; }
-    .controls { display: flex; align-items: center; gap: 6px; }
+    .controls { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
     .controls select { height: 26px; width: auto; min-width: 70px; padding: 0 6px; font-size: 11px; border-radius: 5px; border: 1px solid var(--border); color: var(--input-fg); background: var(--input); }
     .controls .spacer { flex: 1; }
     .send { min-width: 50px; height: 28px; padding: 0 12px; font-weight: 600; font-size: 12px; border-radius: 6px; border: none; color: var(--button-fg); background: var(--accent); cursor: pointer; }
      .send:hover { opacity: 0.9; }
      .send:disabled { opacity: 0.5; cursor: not-allowed; }
+    .refine-btn { height: 26px; padding: 0 8px; font-size: 11px; border-radius: 5px; border: 1px solid var(--border); color: var(--muted); background: var(--secondary); cursor: pointer; transition: all .15s; }
+    .refine-btn:hover { color: var(--fg); background: var(--secondary-hover); border-color: var(--accent); }
+    .summarize-btn { height: 26px; padding: 0 8px; font-size: 11px; border-radius: 5px; border: 1px solid var(--border); color: var(--muted); background: var(--secondary); cursor: pointer; transition: all .15s; }
+    .summarize-btn:hover { color: var(--fg); background: var(--secondary-hover); }
+
+    /* === Status Dashboard === */
+    .status-dashboard { display: flex; align-items: center; gap: 8px; padding: 4px 12px; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--panel) 95%, var(--accent) 5%); font-size: 11px; color: var(--muted); flex-shrink: 0; }
+    .status-item { display: flex; align-items: center; gap: 4px; }
+    .status-item .label { opacity: 0.7; }
+    .status-item .value { font-weight: 500; color: var(--fg); font-family: var(--vscode-editor-font-family); }
+    .token-bar { width: 60px; height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; }
+    .token-bar-fill { height: 100%; border-radius: 3px; background: var(--accent); transition: width .3s ease; }
+    .context-badge { font-size: 10px; padding: 1px 6px; border-radius: 8px; background: var(--secondary); color: var(--muted); }
 
      /* === Scroll to bottom === */
      .scroll-bottom {
@@ -185,6 +198,23 @@ export function getWebviewHtml(webview: vscode.Webview, _extensionUri: vscode.Ur
     <div class="tabs">
       <div class="tab active" data-tab="chat">Chat</div>
       <div class="tab" data-tab="explorer">Explorer</div>
+      <div class="tab" data-tab="terminal">Terminal</div>
+    </div>
+
+    <div class="status-dashboard" id="statusDashboard">
+      <div class="status-item">
+        <span class="label">Tokens:</span>
+        <span class="value" id="tokenCount">0</span>
+        <div class="token-bar"><div class="token-bar-fill" id="tokenBar" style="width: 0%"></div></div>
+      </div>
+      <div class="status-item">
+        <span class="label">Context:</span>
+        <span class="value context-badge" id="contextInfo">idle</span>
+      </div>
+      <div class="status-item">
+        <span class="label">Files:</span>
+        <span class="value" id="filesLoaded">0</span>
+      </div>
     </div>
 
     <main>
@@ -199,6 +229,22 @@ export function getWebviewHtml(webview: vscode.Webview, _extensionUri: vscode.Ur
           <div id="explorerList"></div>
         </div>
       </section>
+      <section class="pane" data-pane="terminal">
+        <div class="terminal-pane">
+          <div class="explorer-header">
+            <input id="terminalInput" placeholder="Enter command (ls, dir, cd, etc.)" style="flex:1" />
+            <select id="shellType" style="height:28px;padding:0 6px;font-size:11px;border-radius:5px;border:1px solid var(--border);color:var(--input-fg);background:var(--input);">
+              <option value="auto">Auto</option>
+              <option value="powershell">PowerShell</option>
+              <option value="cmd">CMD</option>
+              <option value="bash">Bash</option>
+            </select>
+            <button class="icon-btn" id="terminalRun" title="Run">▶</button>
+          </div>
+          <pre id="terminalOutput" style="margin-top:8px;padding:10px;border-radius:8px;background:var(--code);border:1px solid var(--border);font-size:12px;max-height:calc(100vh - 250px);overflow:auto;white-space:pre-wrap;"></pre>
+        </div>
+      </section>
+      </section>
     </main>
 
     <footer class="composer">
@@ -208,6 +254,8 @@ export function getWebviewHtml(webview: vscode.Webview, _extensionUri: vscode.Ur
           <select id="mode" title="Mode">
             <option>Agent</option><option>Chat</option><option>Plan</option><option>WebSearch</option>
           </select>
+          <button class="refine-btn" id="refinePrompt" title="Refine your prompt with AI prompt engineering">✨ Refine</button>
+          <button class="summarize-btn" id="summarizeChat" title="Summarize the conversation">📝 Summarize</button>
           <span class="spacer"></span>
           <button class="icon-btn" id="clearHistory" title="Clear">${iconTrash()}</button>
           <button class="send" id="send">Send</button>
@@ -233,9 +281,20 @@ export function getWebviewHtml(webview: vscode.Webview, _extensionUri: vscode.Ur
        explorerPath: document.getElementById("explorerPath"),
        explorerRefresh: document.getElementById("explorerRefresh"),
        newFile: document.getElementById("newFile"),
-       scrollBottom: document.getElementById("scrollBottom")
+       scrollBottom: document.getElementById("scrollBottom"),
+       refinePrompt: document.getElementById("refinePrompt"),
+       summarizeChat: document.getElementById("summarizeChat"),
+       terminalInput: document.getElementById("terminalInput"),
+       terminalOutput: document.getElementById("terminalOutput"),
+       terminalRun: document.getElementById("terminalRun"),
+       shellType: document.getElementById("shellType"),
+       tokenCount: document.getElementById("tokenCount"),
+       tokenBar: document.getElementById("tokenBar"),
+       contextInfo: document.getElementById("contextInfo"),
+       filesLoaded: document.getElementById("filesLoaded"),
      };
     let pending;
+    let totalTokensUsed = 0;
 
     document.querySelectorAll(".tab").forEach(tab => {
       tab.addEventListener("click", () => {
@@ -245,6 +304,38 @@ export function getWebviewHtml(webview: vscode.Webview, _extensionUri: vscode.Ur
         if (target === "explorer") requestExplorer();
         vscode.postMessage({ type: "switchTab", tab: target });
       });
+    });
+
+    // Terminal tab handlers
+    function runTerminalCommand() {
+      const cmd = els.terminalInput.value.trim();
+      if (!cmd) return;
+      els.terminalOutput.textContent += "$ " + cmd + "\n";
+      vscode.postMessage({ type: "runTerminal", command: cmd, shellType: els.shellType.value });
+      els.terminalInput.value = "";
+    }
+    els.terminalRun.addEventListener("click", runTerminalCommand);
+    els.terminalInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); runTerminalCommand(); }
+    });
+
+    // Refine Prompt button
+    els.refinePrompt.addEventListener("click", () => {
+      const text = els.prompt.value.trim();
+      if (!text) return;
+      els.refinePrompt.disabled = true;
+      els.refinePrompt.textContent = "⏳ Refining...";
+      vscode.postMessage({ type: "enhancePrompt", text });
+    });
+
+    // Summarize button
+    els.summarizeChat.addEventListener("click", () => {
+      const allText = Array.from(document.querySelectorAll(".bubble"))
+        .map(b => b.textContent).join("\n\n");
+      if (!allText.trim()) return;
+      els.summarizeChat.disabled = true;
+      els.summarizeChat.textContent = "⏳...";
+      vscode.postMessage({ type: "summarize", text: allText });
     });
 
     document.getElementById("pickModel").addEventListener("click", () => vscode.postMessage({ type: "openModelPicker" }));
@@ -479,13 +570,13 @@ export function getWebviewHtml(webview: vscode.Webview, _extensionUri: vscode.Ur
         } catch (_e) {}
       }
       return escapeHtml(text)
-        .replace(/\x60\x60\x60([\\w-]*)\n([\s\S]*?)\x60\x60\x60/g, (_m, _lang, code) => {
+        .replace(/\x60\x60\x60([\w-]*)\n([\s\S]*?)\x60\x60\x60/g, (_m, _lang, code) => {
           const decoded = code.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">");
           return '<pre data-code="' + encodeURIComponent(decoded) + '"><code>' + code + '</code></pre><div class="code-actions"><button data-action="copy">Copy</button><button data-action="insert">Insert</button></div>';
         })
         .replace(/\*{2}([^*]+)\*{2}/g, "<strong>$1</strong>")
         .replace(/\x60([^\x60]+)\x60/g, "<code>$1</code>")
-        .replace(/\\n/g, "<br>");
+        .replace(/\r?\n/g, "<br>");
     }
 
     function bindCodeActions(root) {
@@ -512,6 +603,7 @@ export function getWebviewHtml(webview: vscode.Webview, _extensionUri: vscode.Ur
       const msg = event.data;
       if (msg.type === "settings") {
         els.modelName.textContent = msg.modelName || "No model";
+        els.modelName.dataset.contextSize = String(msg.contextSize || 4096);
         if (msg.defaultMode) els.mode.value = msg.defaultMode;
       }
       if (msg.type === "historyUpdated") renderHistory(msg.messages || []);
@@ -521,6 +613,7 @@ export function getWebviewHtml(webview: vscode.Webview, _extensionUri: vscode.Ur
         streamingRaw = "";
         streamingItem = null;
         streamingBubble = null;
+        els.contextInfo.textContent = "loading...";
       }
       if (msg.type === "streamChunk") {
         // Lazily create the assistant bubble on first text chunk
@@ -552,6 +645,7 @@ export function getWebviewHtml(webview: vscode.Webview, _extensionUri: vscode.Ur
       }
       if (msg.type === "streamFinalize") {
         setBusy(false);
+        els.contextInfo.textContent = "idle";
         // Remove the tool log if present
         const toolLog = document.querySelector(".agent-tool-log");
         if (toolLog) { toolLog.remove(); }
@@ -579,6 +673,44 @@ export function getWebviewHtml(webview: vscode.Webview, _extensionUri: vscode.Ur
       if (msg.type === "retryStart") { clearAgentTodo(); setBusy(true); }
       if (msg.type === "explorerData") renderExplorer(msg.entries || []);
       if (msg.type === "refreshExplorer") requestExplorer();
+
+      // Terminal result
+      if (msg.type === "terminalResult") {
+        const prefix = msg.exitCode === 0 ? "" : "[exit " + msg.exitCode + "] ";
+        els.terminalOutput.textContent += prefix + (msg.output || "") + "\n\n";
+        els.terminalOutput.scrollTop = els.terminalOutput.scrollHeight;
+      }
+
+      // Token usage dashboard update
+      if (msg.type === "tokenUsage") {
+        const usage = msg.usage || {};
+        totalTokensUsed += (usage.total || 0);
+        els.tokenCount.textContent = totalTokensUsed.toLocaleString();
+        const contextSize = parseInt(els.modelName.dataset.contextSize || "4096");
+        const pct = Math.min(100, Math.round((usage.total || 0) / contextSize * 100));
+        els.tokenBar.style.width = pct + "%";
+        els.tokenBar.style.background = pct > 80 ? "var(--error)" : "var(--accent)";
+        els.contextInfo.textContent = (usage.context || 0) + " ctx";
+        els.filesLoaded.textContent = (usage.files_loaded || []).length;
+      }
+
+      // Summarize result
+      if (msg.type === "summarizeResult") {
+        els.summarizeChat.disabled = false;
+        els.summarizeChat.textContent = "📝 Summarize";
+        append("assistant", "**📝 Summary** (" + (msg.tokens || 0) + " tokens):\\n\\n" + msg.summary, "Summary");
+      }
+
+      // Enhanced prompt result
+      if (msg.type === "enhancedPrompt") {
+        els.prompt.value += msg.chunk;
+        els.prompt.style.height = "auto";
+        els.prompt.style.height = Math.min(els.prompt.scrollHeight, 150) + "px";
+      }
+      if (msg.type === "enhancedPromptDone") {
+        els.refinePrompt.disabled = false;
+        els.refinePrompt.textContent = "✨ Refine";
+      }
     });
 
     vscode.postMessage({ type: "getSettings" });

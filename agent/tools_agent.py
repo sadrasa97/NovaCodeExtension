@@ -594,6 +594,42 @@ class AgentSession:
                 timeout_seconds = max(1, min(timeout_seconds, 1800))
                 return self._run_shell(command, timeout_seconds)
 
+            if name in {"shell", "cmd", "powershell", "terminal"}:
+                command = args.get("command", "")
+                if not command:
+                    raise ToolError(f"{name} requires 'command'")
+                shell_type = args.get("shell_type", name if name in ("cmd", "powershell") else "auto")
+                timeout_seconds = int(args.get("timeout_seconds", 30))
+                timeout_seconds = max(1, min(timeout_seconds, 300))
+                try:
+                    from tools.terminal_tools import run_terminal_command
+                    result = run_terminal_command(
+                        command=command,
+                        cwd=self.cwd,
+                        shell_type=shell_type,
+                        timeout=timeout_seconds,
+                        safe_mode=True,
+                    )
+                    parts = [
+                        f"CWD: {result['cwd']}",
+                        f"Command: {result['command']}",
+                        f"ExitCode: {result['exit_code']}",
+                    ]
+                    if result['stdout']:
+                        parts.append("STDOUT:\n" + result['stdout'])
+                    if result['stderr']:
+                        parts.append("STDERR:\n" + result['stderr'])
+                    return _truncate("\n\n".join(parts))
+                except Exception as exc:
+                    return f"[terminal error] {exc}"
+
+            if name == "env_context":
+                try:
+                    from tools.terminal_tools import get_directory_context
+                    return get_directory_context(self.workspace)
+                except Exception as exc:
+                    return f"[error] {exc}"
+
             if name == "analyze_imports":
                 path = args.get("path", "")
                 if not path:

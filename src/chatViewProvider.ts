@@ -142,6 +142,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         case "stopAgent":
           this._stopAgent();
           break;
+        case "runTerminal":
+          await this._handleTerminalCommand(msg.command, msg.shellType);
+          break;
+        case "summarize":
+          await this._handleSummarize(msg.text);
+          break;
+        case "enhancePrompt":
+          await this._handleEnhancePrompt(msg.text);
+          break;
       }
     });
     this._postSettings();
@@ -268,6 +277,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     switch (tab) {
       case "explorer":
         this._postExplorerData(payload || { base: "." });
+        break;
+      case "terminal":
+        // Terminal tab is client-side only; no initial data needed
         break;
       case "recent":
         this._postRecentFiles();
@@ -597,6 +609,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               this.postMessage({ type: "agentEvent", event: msg.event, ...msg });
             } else if (msg.stream && msg.done) {
               if (msg.modified_files) { modifiedFiles = msg.modified_files; }
+              if (msg.token_usage) {
+                this.postMessage({ type: "tokenUsage", usage: msg.token_usage });
+              }
             } else if (msg.ok === false) {
               gotError = true;
               reject(new Error(msg.error || "Bridge error"));
@@ -661,6 +676,132 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this._activeBridge = null;
       this.postMessage({ type: "error", text: "Agent stopped by user." });
     }
+  }
+
+  private async _handleTerminalCommand(command: string, shellType?: string): Promise<void> {
+    const projectRoot = this._resolveProjectRoot();
+    const payload = JSON.stringify({
+      command_type: "terminal",
+      command,
+      shell_type: shellType || "auto",
+      cwd: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || projectRoot,
+      workspace: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || projectRoot,
+    });
+
+    const python = this._settings.pythonPath || (process.platform === "win32" ? "python" : "python3");
+    const candidateBridgePaths = [
+      path.join(projectRoot, "bridge", "chat_bridge.py"),
+      path.join(this._context.extensionUri.fsPath, "bridge", "chat_bridge.py"),
+    ];
+    const actualBridge = candidateBridgePaths.find(p => fs.existsSync(p)) || candidateBridgePaths[0];
+
+    try {
+      const result = child.execFileSync(python, [actualBridge, payload], {
+        cwd: projectRoot,
+        encoding: "utf-8",
+        timeout: 30000,
+      });
+      const parsed = JSON.parse(result.trim().split("\n").pop() || "{}");
+      if (parsed.ok) {
+        const output = parsed.stdout || "(no output)";
+        this.postMessage({ type: "terminalResult", output, exitCode: parsed.exit_code, command });
+      } else {
+        this.postMessage({ type: "terminalResult", output: parsed.error || "Command failed", exitCode: 1, command });
+      }
+    } catch (err: any) {
+      this.postMessage({ type: "terminalResult", output: err?.message || "Terminal error", exitCode: 1, command });
+    }
+  }
+
+  private async _handleSummarize(text: string): Promise<void> {
+    const projectRoot = this._resolveProjectRoot();
+    const payload = JSON.stringify({
+      command_type: "summarize",
+      text,
+      max_tokens: 500,
+    });
+
+    const python = this._settings.pythonPath || (process.platform === "win32" ? "python" : "python3");
+    const candidateBridgePaths = [
+      path.join(projectRoot, "bridge", "chat_bridge.py"),
+      path.join(this._context.extensionUri.fsPath, "bridge", "chat_bridge.py"),
+    ];
+    const actualBridge = candidateBridgePaths.find(p => fs.existsSync(p)) || candidateBridgePaths[0];
+
+    try {
+      const result = child.execFileSync(python, [actualBridge, payload], {
+        cwd: projectRoot,
+        encoding: "utf-8",
+        timeout: 30000,
+      });
+      const parsed = JSON.parse(result.trim().split("\n").pop() || "{}");
+      if (parsed.ok) {
+        this.postMessage({ type: "summarizeResult", summary: parsed.summary, tokens: parsed.tokens });
+      } else {
+        this.postMessage({ type: "error", text: parsed.error || "Summarization failed" });
+      }
+    } catch (err: any) {
+      this.postMessage({ type: "error", text: err?.message || "Summarize error" });
+    }
+  }
+
+  private async _handleEnhancePrompt(text: string): Promise<void> {
+    const projectRoot = this._resolveProjectRoot();
+    const cfg = vscode.workspace.getConfiguration("novacode");
+    const payload = JSON.stringify({
+      command_type: "enhance_prompt",
+      prompt: text,
+      backend: this._settings.backend,
+      model_path: this._settings.modelPath,
+      context_size: this._settings.contextSize,
+      gpu_layers: this._settings.gpuLayers,
+      threads: this._settings.threads,
+      temperature: this._settings.temperature,
+      max_tokens: 1500,
+      openrouter_api_key: cfg.get<string>("openrouterApiKey") || "",
+      openrouter_model: cfg.get<string>("openrouterModel") || "",
+      nvidia_api_key: cfg.get<string>("nvidiaApiKey") || "",
+      nvidia_model: cfg.get<string>("nvidiaModel") || "",
+      deepseek_api_key: cfg.get<string>("deepseekApiKey") || "",
+      deepseek_model: this._settings.deepseekModel,
+      workspace: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || projectRoot,
+    });
+
+    const python = this._settings.pythonPath || (process.platform === "win32" ? "python" : "python3");
+    const candidateBridgePaths = [
+      path.join(projectRoot, "bridge", "chat_bridge.py"),
+      path.join(this._context.extensionUri.fsPath, "bridge", "chat_bridge.py"),
+    ];
+    const actualBridge = candidateBridgePaths.find(p => fs.existsSync(p)) || candidateBridgePaths[0];
+
+    this.postMessage({ type: "streamStart" });
+    const childProcess = child.spawn(python, [actualBridge, payload], {
+      cwd: projectRoot,
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let lineBuffer = "";
+    childProcess.stdout!.on("data", (data: Buffer) => {
+      lineBuffer += data.toString("utf-8");
+      const lines = lineBuffer.split("\n");
+      lineBuffer = lines.pop() || "";
+      for (const line of lines) {
+        if (!line.trim()) { continue; }
+        try {
+          const msg = JSON.parse(line);
+          if (msg.stream && msg.chunk) {
+            this.postMessage({ type: "enhancedPrompt", chunk: msg.chunk });
+          } else if (msg.stream && msg.done) {
+            this.postMessage({ type: "enhancedPromptDone" });
+          }
+        } catch (_e) { /* ignore */ }
+      }
+    });
+
+    childProcess.on("close", () => {
+      this.postMessage({ type: "enhancedPromptDone" });
+    });
   }
 
   private _resolveProjectRoot(): string {

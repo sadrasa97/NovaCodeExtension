@@ -258,6 +258,17 @@ class NvidiaProvider(_OpenAICompatibleProvider):
         self.extra_headers = {}
 
 
+class OpenAIProvider(_OpenAICompatibleProvider):
+    name = "openai"
+
+    def __init__(self, settings: Settings):
+        super().__init__(settings)
+        self.base_url = settings.openai_base_url
+        self.api_key = settings.openai_api_key
+        self.model = settings.openai_model
+        self.extra_headers = {}
+
+
 def create_provider(settings: Settings) -> BaseProvider:
     err = settings.validate_backend()
     if err:
@@ -268,4 +279,6 @@ def create_provider(settings: Settings) -> BaseProvider:
         return OpenRouterProvider(settings)
     if settings.backend == "nvidia":
         return NvidiaProvider(settings)
+    if settings.backend == "openai":
+        return OpenAIProvider(settings)
     raise ProviderError(f"Unknown backend: {settings.backend}")

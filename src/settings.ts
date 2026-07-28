@@ -22,6 +22,10 @@ export class SettingsManager {
 
   get deepseekApiKey(): string { return this.getConfig().get<string>("deepseekApiKey") || ""; }
   get deepseekModel(): string { return this.getConfig().get<string>("deepseekModel") || "deepseek-chat"; }
+
+  get openaiApiKey(): string { return this.getConfig().get<string>("openaiApiKey") || ""; }
+  get openaiBaseUrl(): string { return this.getConfig().get<string>("openaiBaseUrl") || ""; }
+  get openaiModel(): string { return this.getConfig().get<string>("openaiModel") || ""; }
   get rememberChatHistory(): boolean { return this.getConfig().get<boolean>("rememberChatHistory") ?? true; }
   get chatHistoryPath(): string { return this.getConfig().get<string>("chatHistoryPath") || ""; }
   get recentFilesMax(): number { return this.getConfig().get<number>("recentFilesMax") || 25; }
@@ -67,12 +71,23 @@ export class SettingsManager {
         value: config.get<string>("openrouterModel") || ""
       });
       if (model !== undefined) { await config.update("openrouterModel", model, vscode.ConfigurationTarget.Global); }
-    } else if (backend === "nvidia") {
-      const model = await vscode.window.showInputBox({
-        title: "NVIDIA Model", value: config.get<string>("nvidiaModel") || ""
-      });
-      if (model !== undefined) { await config.update("nvidiaModel", model, vscode.ConfigurationTarget.Global); }
-    }
+     } else if (backend === "nvidia") {
+       const model = await vscode.window.showInputBox({
+         title: "NVIDIA Model", value: config.get<string>("nvidiaModel") || ""
+       });
+       if (model !== undefined) { await config.update("nvidiaModel", model, vscode.ConfigurationTarget.Global); }
+     } else if (backend === "openai") {
+       const model = await vscode.window.showInputBox({
+         title: "OpenAI Model", prompt: "e.g. gpt-4o, gpt-4o-mini, gpt-4.1",
+         value: config.get<string>("openaiModel") || ""
+       });
+       if (model !== undefined) { await config.update("openaiModel", model, vscode.ConfigurationTarget.Global); }
+       const baseUrl = await vscode.window.showInputBox({
+         title: "OpenAI Base URL", prompt: "e.g. https://api.openai.com/v1 or your custom endpoint",
+         value: config.get<string>("openaiBaseUrl") || ""
+       });
+       if (baseUrl !== undefined) { await config.update("openaiBaseUrl", baseUrl, vscode.ConfigurationTarget.Global); }
+     }
   }
 
   async selectModelsDirectoryInteractive(): Promise<void> {

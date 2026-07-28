@@ -98,6 +98,118 @@ def _referenced_files_context(workspace: str | None, prompt: str) -> str:
     return "Relevant file(s) referenced in the user's message:\n\n" + "\n\n".join(sections)
 
 
+def _dynamic_context(workspace: str | None, prompt: str) -> tuple[str, dict]:
+    """Build optimized dynamic context using lazy loading.
+    Only loads files relevant to the user's query instead of the full codebase."""
+    if not workspace or not prompt:
+        return "", {}
+    root = Path(workspace).expanduser()
+    if not root.exists() or not root.is_dir():
+        return "", {}
+    try:
+        from agent.context_manager import build_lazy_context
+        return build_lazy_context(root, prompt)
+    except Exception:
+        return "", {}
+
+
+def _environment_context(workspace: str | None) -> str:
+    """Get environment/terminal context for the model."""
+    if not workspace:
+        return ""
+    try:
+        from tools.terminal_tools import get_directory_context
+        return get_directory_context(Path(workspace))
+    except Exception:
+        return ""
+
+
+def _handle_terminal_command(payload: dict) -> int:
+    """Handle a terminal command execution request."""
+    command = payload.get("command", "")
+    shell_type = payload.get("shell_type", "auto")
+    cwd = payload.get("cwd")
+    workspace = payload.get("workspace")
+
+    if not command:
+        _respond(False, error="No command provided")
+        return 1
+
+    try:
+        from tools.terminal_tools import run_terminal_command
+        work_dir = Path(cwd) if cwd else (Path(workspace) if workspace else None)
+        result = run_terminal_command(
+            command=command,
+            cwd=work_dir,
+            shell_type=shell_type,
+            timeout=30,
+            safe_mode=True,
+        )
+        _respond(True, **result)
+        return 0
+    except Exception as exc:
+        _respond(False, error=str(exc))
+        return 1
+
+
+def _handle_summarize(payload: dict) -> int:
+    """Handle a summarization request."""
+    text = payload.get("text", "")
+    max_tokens = int(payload.get("max_tokens", 500))
+
+    if not text:
+        _respond(False, error="No text provided")
+        return 1
+
+    try:
+        from agent.summarizer import summarize_text, estimate_tokens
+        summary = summarize_text(text, max_tokens=max_tokens)
+        token_count = estimate_tokens(summary)
+        _respond(True, summary=summary, tokens=token_count)
+        return 0
+    except Exception as exc:
+        _respond(False, error=str(exc))
+        return 1
+
+
+def _handle_enhance_prompt(payload: dict, settings) -> int:
+    """Handle prompt enhancement request."""
+    prompt = payload.get("prompt", "")
+    workspace = payload.get("workspace")
+
+    if not prompt:
+        _respond(False, error="No prompt provided")
+        return 1
+
+    try:
+        from agent.prompts import ENHANCE_PROMPT_SYSTEM
+        from agent.providers import create_provider
+
+        # Build minimal workspace context for the enhancer
+        ws_context = ""
+        if workspace:
+            ws_context = _workspace_tree(workspace)
+
+        provider = create_provider(settings)
+        try:
+            enhanced = provider.complete(
+                [
+                    {"role": "system", "content": ENHANCE_PROMPT_SYSTEM},
+                    {"role": "user", "content": f"Original request: {prompt}\n\nWorkspace structure:\n{ws_context}"},
+                ],
+                workspace_context=None,
+                max_tokens=1500,
+            )
+            _stream_chunk(enhanced)
+            _stream_end()
+            return 0
+        finally:
+            provider.close()
+    except Exception as exc:
+        _respond(False, error=str(exc))
+        return 1
+
+
 def _workspace_context(workspace: str | None) -> str:
     if not workspace:
         return ""
@@ -368,6 +480,13 @@ def main() -> int:
     sys.path.insert(0, str(root))
     os.chdir(root)
 
+    # Handle special command types that don't need full model setup
+    command_type = payload.get("command_type")
+    if command_type == "terminal":
+        return _handle_terminal_command(payload)
+    if command_type == "summarize":
+        return _handle_summarize(payload)
+
     requested_backend = payload.get("backend") or "gguf"
     if requested_backend == "gguf" and not _current_python_is_compatible():
         alt_python = _find_compatible_python() or _bootstrap_embedded_python()
@@ -393,6 +512,9 @@ def main() -> int:
         settings.openrouter_model = payload.get("openrouter_model") or settings.openrouter_model
         settings.nvidia_api_key = payload.get("nvidia_api_key") or settings.nvidia_api_key
         settings.nvidia_model = payload.get("nvidia_model") or settings.nvidia_model
+        settings.openai_api_key = payload.get("openai_api_key") or settings.openai_api_key
+        settings.openai_base_url = payload.get("openai_base_url") or settings.openai_base_url
+        settings.openai_model = payload.get("openai_model") or settings.openai_model
         settings.deepseek_api_key = payload.get("deepseek_api_key") or settings.deepseek_api_key
         settings.deepseek_model = payload.get("deepseek_model") or settings.deepseek_model
         settings.workspace = payload.get("workspace") or settings.workspace
@@ -405,6 +527,10 @@ def main() -> int:
         if not prompt.strip():
             _respond(False, error="Prompt is empty.")
             return 1
+
+        # Handle prompt enhancement request
+        if command_type == "enhance_prompt":
+            return _handle_enhance_prompt(payload, settings)
 
         from agent.prompts import CHAT_SYSTEM_PROMPT, AGENT_SYSTEM_PROMPT, PLAN_SYSTEM_PROMPT, SEARCH_SYSTEM_PROMPT, ENHANCE_PROMPT_SYSTEM
 
@@ -474,14 +600,26 @@ def main() -> int:
                     _stream_end()
                     return 0
 
-                # Real question: search first, then feed the model only the
-                # files it actually needs (plus the lightweight tree/symbol
-                # index), instead of relying on tree/index alone.
-                ws_ctx_parts = [_workspace_context(settings.workspace)]
+                # Real question: use dynamic context (lazy loading) to only
+                # include files relevant to the user's query, plus environment
+                # context for terminal/path awareness.
+                env_ctx = _environment_context(settings.workspace)
+                dynamic_ctx, ctx_metadata = _dynamic_context(settings.workspace, prompt)
                 file_ctx = _referenced_files_context(settings.workspace, prompt)
+
+                ws_ctx_parts = []
+                if env_ctx:
+                    ws_ctx_parts.append(f"Environment:\n{env_ctx}")
+                if dynamic_ctx:
+                    ws_ctx_parts.append(dynamic_ctx)
                 if file_ctx:
                     ws_ctx_parts.append(file_ctx)
                 ws_ctx = "\n\n".join(p for p in ws_ctx_parts if p)
+
+                # Track token usage for status dashboard
+                from agent.summarizer import estimate_tokens as _est_tokens
+                context_tokens = _est_tokens(ws_ctx)
+                prompt_tokens = _est_tokens(prompt)
 
                 raw_chunks: list[str] = []
                 for token in provider.stream(
@@ -491,8 +629,17 @@ def main() -> int:
                 ):
                     raw_chunks.append(token)
                     _stream_chunk(token)
-                # Send done signal (strip_think_tags applied on final text for history)
-                _stream_end()
+                # Emit token usage metadata for the status dashboard
+                response_tokens = _est_tokens("".join(raw_chunks))
+                _stream_end(
+                    token_usage={
+                        "context": context_tokens,
+                        "prompt": prompt_tokens,
+                        "response": response_tokens,
+                        "total": context_tokens + prompt_tokens + response_tokens,
+                        "files_loaded": ctx_metadata.get("files_loaded", []),
+                    }
+                )
         finally:
             provider.close()
 
