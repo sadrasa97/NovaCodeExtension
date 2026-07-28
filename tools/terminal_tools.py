@@ -175,6 +175,131 @@ def list_directory(path: Path, show_hidden: bool = False) -> str:
     return "\n".join(entries) if entries else "(empty directory)"
 
 
+def _python_executable() -> str:
+    for candidate in ("python", "python3", "py"):
+        found = shutil.which(candidate)
+        if found:
+            return found
+    return "python"
+
+
+def run_python_file(
+    path: Path,
+    workspace: Path,
+    script_args: Optional[list[str]] = None,
+    timeout: int = COMMAND_TIMEOUT,
+) -> dict:
+    """Run a Python file with the interpreter and return structured output."""
+    if not path.exists() or not path.is_file():
+        raise TerminalError(f"Python file not found: {path}")
+
+    args = [_python_executable(), str(path), *(script_args or [])]
+    try:
+        proc = subprocess.run(
+            args,
+            cwd=str(workspace),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        raise TerminalError(f"Python script timed out after {timeout}s: {path.name}")
+    except Exception as e:
+        raise TerminalError(f"Failed to run Python file: {e}")
+
+    return {
+        "stdout": _truncate_output(proc.stdout.strip()),
+        "stderr": proc.stderr.strip()[:2000] if proc.stderr else "",
+        "exit_code": proc.returncode,
+        "cwd": str(workspace),
+        "command": " ".join(args),
+    }
+
+
+def run_node_file(
+    path: Path,
+    workspace: Path,
+    script_args: Optional[list[str]] = None,
+    timeout: int = COMMAND_TIMEOUT,
+) -> dict:
+    """Run a JavaScript/TypeScript file with node and return structured output."""
+    if not path.exists() or not path.is_file():
+        raise TerminalError(f"Script file not found: {path}")
+
+    node_bin = shutil.which("node")
+    if not node_bin:
+        raise TerminalError("'node' executable not found on PATH")
+
+    runner = node_bin
+    entry = str(path)
+    if path.suffix.lower() in (".ts", ".tsx"):
+        ts_node = shutil.which("ts-node")
+        if ts_node:
+            runner = ts_node
+        else:
+            npx = shutil.which("npx")
+            if npx:
+                args = [npx, "ts-node", entry, *(script_args or [])]
+                return _run_and_pack(args, workspace, timeout)
+            raise TerminalError("Running .ts files requires 'ts-node' (or npx) on PATH")
+
+    args = [runner, entry, *(script_args or [])]
+    return _run_and_pack(args, workspace, timeout)
+
+
+def _run_and_pack(args: list[str], workspace: Path, timeout: int) -> dict:
+    try:
+        proc = subprocess.run(
+            args,
+            cwd=str(workspace),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        raise TerminalError(f"Script timed out after {timeout}s: {' '.join(args)}")
+    except Exception as e:
+        raise TerminalError(f"Failed to run script: {e}")
+
+    return {
+        "stdout": _truncate_output(proc.stdout.strip()),
+        "stderr": proc.stderr.strip()[:2000] if proc.stderr else "",
+        "exit_code": proc.returncode,
+        "cwd": str(workspace),
+        "command": " ".join(args),
+    }
+
+
+def install_package(
+    manager: str,
+    package: str,
+    workspace: Path,
+    timeout: int = 120,
+) -> dict:
+    """Install a package via pip or npm/yarn/pnpm."""
+    manager = (manager or "pip").lower()
+    if not package or not package.strip():
+        raise TerminalError("install_package requires a package name")
+
+    if manager == "pip":
+        exe = _python_executable()
+        args = [exe, "-m", "pip", "install", package]
+    elif manager in ("npm", "yarn", "pnpm"):
+        bin_path = shutil.which(manager)
+        if not bin_path:
+            raise TerminalError(f"'{manager}' executable not found on PATH")
+        if manager == "npm":
+            args = [bin_path, "install", package]
+        elif manager == "yarn":
+            args = [bin_path, "add", package]
+        else:
+            args = [bin_path, "add", package]
+    else:
+        raise TerminalError(f"Unsupported package manager: {manager}")
+
+    return _run_and_pack(args, workspace, timeout)
+
+
 def get_directory_context(workspace: Path) -> str:
     """Get a summary of the workspace directory for model context."""
     env = get_environment_context(workspace)

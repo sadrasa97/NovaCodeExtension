@@ -30,6 +30,13 @@ export function getWebviewHtml(webview: vscode.Webview, _extensionUri: vscode.Ur
       --code: var(--vscode-textCodeBlock-background);
       --error: var(--vscode-errorForeground);
       --accent: var(--vscode-button-background, #2f7dff);
+      --accent-2: #22d3ee;
+      --accent-grad: linear-gradient(135deg, var(--accent), var(--accent-2));
+      --shadow-sm: 0 1px 2px rgba(0,0,0,0.18);
+      --shadow-md: 0 4px 14px rgba(0,0,0,0.22);
+      --radius-lg: 14px;
+      --radius-md: 10px;
+      --radius-sm: 7px;
     }
 
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -57,23 +64,45 @@ export function getWebviewHtml(webview: vscode.Webview, _extensionUri: vscode.Ur
     .pane.active { display: block; }
 
     /* === Tabs === */
-    .tabs { display: flex; gap: 0; border-bottom: 1px solid var(--border); background: var(--panel); flex-shrink: 0; }
-    .tab { padding: 6px 14px; font-size: 12px; cursor: pointer; color: var(--muted); border-bottom: 2px solid transparent; transition: color .15s, border-color .15s; }
-    .tab:hover { color: var(--fg); }
-    .tab.active { color: var(--fg); border-bottom-color: var(--accent); }
+    .tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); background: var(--panel); flex-shrink: 0; padding: 0 6px; }
+    .tab {
+      padding: 8px 14px; font-size: 12px; font-weight: 500; cursor: pointer;
+      color: var(--muted); border-bottom: 2px solid transparent;
+      border-radius: 6px 6px 0 0;
+      transition: color .15s, border-color .15s, background .15s;
+    }
+    .tab:hover { color: var(--fg); background: color-mix(in srgb, var(--accent) 6%, transparent); }
+    .tab.active { color: var(--fg); border-bottom-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
 
     /* === Messages === */
-    .messages { display: flex; flex-direction: column; gap: 16px; padding-bottom: 120px; }
-    .empty { color: var(--muted); text-align: center; padding: 32px 16px; line-height: 1.6; }
-    .message { display: flex; flex-direction: column; gap: 2px; }
+    .messages { display: flex; flex-direction: column; gap: 18px; padding-bottom: 132px; }
+    .empty { color: var(--muted); text-align: center; padding: 40px 16px; line-height: 1.7; }
+    .message { display: flex; flex-direction: column; gap: 4px; animation: msg-in .22s ease; }
+    @keyframes msg-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
     .message.user { align-items: flex-end; }
-    .meta { font-size: 10px; color: var(--muted); padding: 0 2px; }
-    .bubble { max-width: 100%; padding: 10px 12px; border-radius: 12px; background: var(--panel); border: 1px solid var(--border); line-height: 1.6; overflow-wrap: anywhere; word-break: break-word; }
-    .user .bubble { background: var(--accent); color: var(--button-fg); border-color: transparent; border-radius: 12px 12px 4px 12px; }
-    .assistant .bubble { border-radius: 12px 12px 12px 4px; }
+    .meta { font-size: 10px; color: var(--muted); padding: 0 4px; letter-spacing: .02em; text-transform: uppercase; opacity: .75; }
+    .bubble {
+      max-width: 100%;
+      padding: 11px 14px;
+      border-radius: var(--radius-lg);
+      background: var(--panel);
+      border: 1px solid var(--border);
+      line-height: 1.65;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+      box-shadow: var(--shadow-sm);
+    }
+    .user .bubble {
+      background: var(--accent-grad);
+      color: var(--button-fg);
+      border-color: transparent;
+      border-radius: var(--radius-lg) var(--radius-lg) 4px var(--radius-lg);
+      box-shadow: 0 3px 10px color-mix(in srgb, var(--accent) 35%, transparent);
+    }
+    .assistant .bubble { border-radius: var(--radius-lg) var(--radius-lg) var(--radius-lg) 4px; }
     .error .bubble { background: color-mix(in srgb, var(--error) 10%, var(--panel)); border-color: color-mix(in srgb, var(--error) 30%, transparent); color: var(--error); }
-    .typing .bubble { opacity: 0.7; }
-    .typing .bubble::after { content: ""; display: inline-block; width: 4px; height: 14px; background: var(--fg); margin-left: 4px; animation: blink 1s steps(2) infinite; vertical-align: middle; }
+    .typing .bubble { opacity: 0.85; }
+    .typing .bubble::after { content: ""; display: inline-block; width: 4px; height: 14px; background: currentColor; margin-left: 4px; animation: blink 1s steps(2) infinite; vertical-align: middle; }
     @keyframes blink { 0% { opacity: 1; } 50% { opacity: 0; } }
 
     /* === Code blocks === */
@@ -109,20 +138,85 @@ export function getWebviewHtml(webview: vscode.Webview, _extensionUri: vscode.Ur
     .agent-tool-log { margin: 0 0 4px; padding: 4px 12px 4px 40px; font-size: 11px; color: var(--muted); font-family: var(--vscode-editor-font-family); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
     /* === Composer === */
-    .composer { padding: 8px 12px; border-top: 1px solid var(--border); background: var(--panel); flex-shrink: 0; }
-    .composer-box { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--input); transition: border-color .15s; }
-    .composer-box:focus-within { border-color: var(--accent); }
-    textarea { width: 100%; min-height: 60px; max-height: 150px; resize: none; border: 0; outline: 0; color: var(--input-fg); background: transparent; line-height: 1.5; }
+    .composer { padding: 10px 12px 12px; border-top: 1px solid var(--border); background: var(--panel); flex-shrink: 0; }
+    .composer-box {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 10px 12px 8px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      background: var(--input);
+      box-shadow: var(--shadow-sm);
+      transition: border-color .15s, box-shadow .15s;
+    }
+    .composer-box:focus-within {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+    }
+    textarea {
+      width: 100%;
+      min-height: 44px;
+      max-height: 150px;
+      resize: none;
+      border: 0;
+      outline: 0;
+      color: var(--input-fg);
+      background: transparent;
+      line-height: 1.55;
+      padding-right: 40px; /* keep last line clear of the floating send button */
+    }
     .controls { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-    .controls select { height: 26px; width: auto; min-width: 70px; padding: 0 6px; font-size: 11px; border-radius: 5px; border: 1px solid var(--border); color: var(--input-fg); background: var(--input); }
+    .controls select {
+      height: 26px; width: auto; min-width: 70px; padding: 0 8px;
+      font-size: 11px; font-weight: 500; border-radius: var(--radius-sm);
+      border: 1px solid var(--border); color: var(--input-fg); background: var(--secondary);
+      transition: border-color .15s;
+    }
+    .controls select:hover { border-color: var(--accent); }
     .controls .spacer { flex: 1; }
-    .send { min-width: 50px; height: 28px; padding: 0 12px; font-weight: 600; font-size: 12px; border-radius: 6px; border: none; color: var(--button-fg); background: var(--accent); cursor: pointer; }
-     .send:hover { opacity: 0.9; }
-     .send:disabled { opacity: 0.5; cursor: not-allowed; }
-    .refine-btn { height: 26px; padding: 0 8px; font-size: 11px; border-radius: 5px; border: 1px solid var(--border); color: var(--muted); background: var(--secondary); cursor: pointer; transition: all .15s; }
+
+    /* Send button floats in the bottom-right corner of the composer box so it
+       never wraps/collides with the mode controls on a narrow sidebar. */
+    .send {
+      position: absolute;
+      right: 10px;
+      bottom: 8px;
+      width: 30px;
+      height: 30px;
+      padding: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 50%;
+      border: none;
+      color: var(--button-fg);
+      background: var(--accent-grad);
+      cursor: pointer;
+      box-shadow: 0 2px 8px color-mix(in srgb, var(--accent) 45%, transparent);
+      transition: transform .12s ease, box-shadow .15s ease, opacity .15s ease;
+      flex-shrink: 0;
+    }
+    .send svg { width: 15px; height: 15px; stroke: currentColor; pointer-events: none; }
+    .send:hover { transform: translateY(-1px) scale(1.05); box-shadow: 0 4px 12px color-mix(in srgb, var(--accent) 55%, transparent); }
+    .send:active { transform: scale(0.94); }
+    .send:disabled { opacity: 0.45; cursor: not-allowed; box-shadow: none; transform: none; }
+
+    .refine-btn, .summarize-btn {
+      height: 26px; padding: 0 10px; font-size: 11px; font-weight: 500;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border);
+      color: var(--muted);
+      background: var(--secondary);
+      cursor: pointer;
+      display: inline-flex; align-items: center; gap: 4px;
+      transition: color .15s, background .15s, border-color .15s, transform .1s;
+    }
     .refine-btn:hover { color: var(--fg); background: var(--secondary-hover); border-color: var(--accent); }
-    .summarize-btn { height: 26px; padding: 0 8px; font-size: 11px; border-radius: 5px; border: 1px solid var(--border); color: var(--muted); background: var(--secondary); cursor: pointer; transition: all .15s; }
-    .summarize-btn:hover { color: var(--fg); background: var(--secondary-hover); }
+    .summarize-btn:hover { color: var(--fg); background: var(--secondary-hover); border-color: var(--accent); }
+    .refine-btn:active, .summarize-btn:active { transform: scale(0.96); }
+    .refine-btn:disabled, .summarize-btn:disabled { opacity: 0.6; cursor: default; }
 
     /* === Status Dashboard === */
     .status-dashboard { display: flex; align-items: center; gap: 8px; padding: 4px 12px; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--panel) 95%, var(--accent) 5%); font-size: 11px; color: var(--muted); flex-shrink: 0; }
@@ -168,8 +262,17 @@ export function getWebviewHtml(webview: vscode.Webview, _extensionUri: vscode.Ur
 
     /* === Buttons === */
     button { font: inherit; cursor: pointer; }
-    .icon-btn { width: 26px; height: 26px; padding: 0; display: inline-flex; align-items: center; justify-content: center; border-radius: 5px; border: 1px solid transparent; color: var(--muted); background: transparent; }
-    .icon-btn:hover { color: var(--fg); background: var(--secondary); }
+    .icon-btn {
+      width: 28px; height: 28px; padding: 0;
+      display: inline-flex; align-items: center; justify-content: center;
+      border-radius: var(--radius-sm);
+      border: 1px solid transparent;
+      color: var(--muted);
+      background: transparent;
+      transition: color .15s, background .15s, transform .1s, border-color .15s;
+    }
+    .icon-btn:hover { color: var(--fg); background: var(--secondary); border-color: var(--border); }
+    .icon-btn:active { transform: scale(0.92); }
     .icon-btn svg { width: 14px; height: 14px; stroke: currentColor; pointer-events: none; }
 
     /* === Explorer === */
@@ -258,8 +361,8 @@ export function getWebviewHtml(webview: vscode.Webview, _extensionUri: vscode.Ur
           <button class="summarize-btn" id="summarizeChat" title="Summarize the conversation">📝 Summarize</button>
           <span class="spacer"></span>
           <button class="icon-btn" id="clearHistory" title="Clear">${iconTrash()}</button>
-          <button class="send" id="send">Send</button>
         </div>
+        <button class="send" id="send" title="Send">${iconSend()}</button>
       </div>
     </footer>
   </div>
@@ -734,6 +837,10 @@ function iconSliders(): string {
 
 function iconRefresh(): string {
   return `<svg viewBox="0 0 24 24" fill="none"><path d="M20 12a8 8 0 0 1-13.66 5.66L4 15.32M4 12A8 8 0 0 1 17.66 6.34L20 8.68" stroke-width="2" stroke-linecap="round"/><path d="M4 20v-4.68h4.68M20 4v4.68h-4.68" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+}
+
+function iconSend(): string {
+  return `<svg viewBox="0 0 24 24" fill="none"><path d="M4 12 20 4l-6.5 16-2.5-7-7-2.5Z" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 }
 
 function iconUp(): string {

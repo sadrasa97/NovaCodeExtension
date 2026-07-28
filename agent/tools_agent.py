@@ -623,6 +623,83 @@ class AgentSession:
                 except Exception as exc:
                     return f"[terminal error] {exc}"
 
+            if name in {"run_python_file", "run_python", "python_run"}:
+                path = args.get("path", "")
+                if not path:
+                    raise ToolError(f"{name} requires 'path'")
+                resolved = self._resolve_from_cwd(path)
+                script_args = args.get("args") or args.get("script_args") or []
+                if not isinstance(script_args, list):
+                    raise ToolError("'args' must be a list of string arguments")
+                timeout_seconds = max(1, min(int(args.get("timeout_seconds", 60)), 300))
+                try:
+                    from tools.terminal_tools import run_python_file
+                    result = run_python_file(
+                        resolved, self.workspace,
+                        script_args=[str(a) for a in script_args],
+                        timeout=timeout_seconds,
+                    )
+                    parts = [
+                        f"Command: {result['command']}",
+                        f"ExitCode: {result['exit_code']}",
+                    ]
+                    if result['stdout']:
+                        parts.append("STDOUT:\n" + result['stdout'])
+                    if result['stderr']:
+                        parts.append("STDERR:\n" + result['stderr'])
+                    return _truncate("\n\n".join(parts))
+                except Exception as exc:
+                    return f"[run_python_file error] {exc}"
+
+            if name in {"run_node_file", "run_node", "run_js_file", "run_script"}:
+                path = args.get("path", "")
+                if not path:
+                    raise ToolError(f"{name} requires 'path'")
+                resolved = self._resolve_from_cwd(path)
+                script_args = args.get("args") or args.get("script_args") or []
+                if not isinstance(script_args, list):
+                    raise ToolError("'args' must be a list of string arguments")
+                timeout_seconds = max(1, min(int(args.get("timeout_seconds", 60)), 300))
+                try:
+                    from tools.terminal_tools import run_node_file
+                    result = run_node_file(
+                        resolved, self.workspace,
+                        script_args=[str(a) for a in script_args],
+                        timeout=timeout_seconds,
+                    )
+                    parts = [
+                        f"Command: {result['command']}",
+                        f"ExitCode: {result['exit_code']}",
+                    ]
+                    if result['stdout']:
+                        parts.append("STDOUT:\n" + result['stdout'])
+                    if result['stderr']:
+                        parts.append("STDERR:\n" + result['stderr'])
+                    return _truncate("\n\n".join(parts))
+                except Exception as exc:
+                    return f"[run_node_file error] {exc}"
+
+            if name in {"install_package", "pip_install", "npm_install"}:
+                package = args.get("package", "")
+                manager = args.get("manager", "pip" if name != "npm_install" else "npm")
+                if not package:
+                    raise ToolError(f"{name} requires 'package'")
+                timeout_seconds = max(1, min(int(args.get("timeout_seconds", 180)), 600))
+                try:
+                    from tools.terminal_tools import install_package
+                    result = install_package(manager, package, self.workspace, timeout=timeout_seconds)
+                    parts = [
+                        f"Command: {result['command']}",
+                        f"ExitCode: {result['exit_code']}",
+                    ]
+                    if result['stdout']:
+                        parts.append("STDOUT:\n" + result['stdout'])
+                    if result['stderr']:
+                        parts.append("STDERR:\n" + result['stderr'])
+                    return _truncate("\n\n".join(parts))
+                except Exception as exc:
+                    return f"[install_package error] {exc}"
+
             if name == "env_context":
                 try:
                     from tools.terminal_tools import get_directory_context

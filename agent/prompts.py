@@ -90,6 +90,9 @@ user when the task is complete, blocked, or requires a decision only they can ma
 - shell(command: str, shell_type: str="auto", timeout_seconds: int=30)
 - cmd(command: str, timeout_seconds: int=30)
 - powershell(command: str, timeout_seconds: int=30)
+- run_python_file(path: str, args: list=[], timeout_seconds: int=60)
+- run_node_file(path: str, args: list=[], timeout_seconds: int=60)
+- install_package(package: str, manager: str="pip", timeout_seconds: int=180)
 - env_context()
 
 # IMPORTANT: Using the code index
